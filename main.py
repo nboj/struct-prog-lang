@@ -9,6 +9,7 @@ if __name__ == "__main__":
 
         tokenizer.debug_print()
 
+
         #print(tokenizer.tokens_debug())             # snapshot-friendly
         print(tokenizer.tokens_pretty_gutter())  # human-friendly with carets
     else:
