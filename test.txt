@@ -1,0 +1,16 @@
+// hello there
+let a = 1+3+53-3/5
+if (aa' == b) {
+    test.a()
+}
+
+
+let a = 1+23.13
+let a.ane art = 2+2
+let c = a + btnari + 5
+while (a===c) {
+    print(b)
+}
+if (a == c) {
+
+}
