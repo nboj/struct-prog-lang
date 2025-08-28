@@ -43,7 +43,7 @@ NIX_ENFORCE_NO_NATIVE='1'
 export NIX_ENFORCE_NO_NATIVE
 NIX_HARDENING_ENABLE='bindnow format fortify fortify3 pic relro stackclashprotection stackprotector strictoverflow zerocallusedregs'
 export NIX_HARDENING_ENABLE
-NIX_LDFLAGS='-rpath /home/cauman/work/compiler2/outputs/out/lib  -L/nix/store/9yh9ak97gn659bk4d3n411fx6c0ng7s2-python3-3.13.5/lib -L/nix/store/2i76abyx06asxr2k3rgsp8zx647qj38h-python3-3.12.11/lib -L/nix/store/fkw48vh7ivlvlmhp4j30hy2gvg00jgin-gcc-14.3.0-lib/lib -L/nix/store/9yh9ak97gn659bk4d3n411fx6c0ng7s2-python3-3.13.5/lib -L/nix/store/2i76abyx06asxr2k3rgsp8zx647qj38h-python3-3.12.11/lib -L/nix/store/fkw48vh7ivlvlmhp4j30hy2gvg00jgin-gcc-14.3.0-lib/lib'
+NIX_LDFLAGS='-rpath /home/cauman/work/struct-prog-lang/outputs/out/lib  -L/nix/store/9yh9ak97gn659bk4d3n411fx6c0ng7s2-python3-3.13.5/lib -L/nix/store/2i76abyx06asxr2k3rgsp8zx647qj38h-python3-3.12.11/lib -L/nix/store/fkw48vh7ivlvlmhp4j30hy2gvg00jgin-gcc-14.3.0-lib/lib -L/nix/store/9yh9ak97gn659bk4d3n411fx6c0ng7s2-python3-3.13.5/lib -L/nix/store/2i76abyx06asxr2k3rgsp8zx647qj38h-python3-3.12.11/lib -L/nix/store/fkw48vh7ivlvlmhp4j30hy2gvg00jgin-gcc-14.3.0-lib/lib'
 export NIX_LDFLAGS
 NIX_NO_SELF_RPATH='1'
 NIX_STORE='/nix/store'
@@ -147,7 +147,7 @@ name='nix-shell-env'
 export name
 nativeBuildInputs='/nix/store/7bhg7iq9y3qd36r9isbkiwqx3l1r7pds-bash-interactive-5.3p0-dev /nix/store/0f1pa2axxyqff2ww633q5v3rz9by36xx-python3.13-virtualenv-20.31.2 /nix/store/rcb5q4gxh38d19lr7hnqnpsgs9ni0p9y-python3.12-pip-25.0.1 /nix/store/fkw48vh7ivlvlmhp4j30hy2gvg00jgin-gcc-14.3.0-lib'
 export nativeBuildInputs
-out='/home/cauman/work/compiler2/outputs/out'
+out='/home/cauman/work/struct-prog-lang/outputs/out'
 export out
 outputBin='out'
 outputDev='out'
@@ -178,7 +178,7 @@ preConfigurePhases=' updateAutotoolsGnuConfigScriptsPhase'
 declare -a preFixupHooks=('_moveToShare' '_multioutDocs' '_multioutDevs' )
 preferLocalBuild='1'
 export preferLocalBuild
-prefix='/home/cauman/work/compiler2/outputs/out'
+prefix='/home/cauman/work/struct-prog-lang/outputs/out'
 declare -a propagatedBuildDepFiles=('propagated-build-build-deps' 'propagated-native-build-inputs' 'propagated-build-target-deps' )
 propagatedBuildInputs=''
 export propagatedBuildInputs

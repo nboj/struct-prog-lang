@@ -23,6 +23,9 @@ class TokenType(Enum):
     # KeyWords
     Let = "Let"
     If = "If"
+    While = "While"
+    Loop = "Loop"
+    Print = "Print"
 
 
 class Token:
@@ -54,6 +57,7 @@ class Tokenizer:
         self.KEYWORDS = {
             "let": TokenType.Let,
             "if": TokenType.If,
+            "print": TokenType.Print,
         }
 
     def is_num(self, ch: str):
@@ -197,7 +201,10 @@ class Tokenizer:
                 peeked = ch
                 row = self.row
                 col = self.col
-                while self.is_num(peeked):
+                found_dot = False
+                while self.is_num(peeked) or (peeked == '.' and not found_dot):
+                    if peeked == '.':
+                        found_dot = True
                     num += self.bump()
                     peeked = self.peek()
                 self.add(TokenType.Number, num, row, col)
@@ -270,7 +277,8 @@ class Tokenizer:
         lines = []
         for t in self.tokens:
             lines.append(
-                f'Token {{ kind: {t.kind.name}, raw: "{self._escape(t.raw)}", pos: { t.row}:{t.col} }}'
+                f'Token {{ kind: {t.kind.name}, raw: "{self._escape(t.raw)}", pos: {
+                    t.row}:{t.col} }}'
             )
         return "\n".join(lines)
 
