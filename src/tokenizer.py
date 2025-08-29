@@ -23,6 +23,7 @@ class TokenType(Enum):
     Comma = "Comma"
     Dot = "Dot"
     Eof = "Eof"
+    String = "String"
 
     # KeyWords
     Let = "Let"
@@ -125,9 +126,20 @@ class Tokenizer:
                 self.bump()
                 continue
 
-            if ch == ".":
-                self.add_single(TokenType.Dot, ch)
-                self.bump()
+            if ch == ".":  # '.0)'
+                if self.is_num(self.peek_next()):
+                    start_on = self.index
+                    out = "0" + self.bump()
+                    ch = self.bump()
+                    out += ch
+                    ch = self.peek()
+                    while self.is_num(ch):
+                        out += self.bump()
+                        ch = self.peek()
+                    self.add(TokenType.Number, out, Span(start_on, self.index))
+                else:
+                    self.add_single(TokenType.Dot, ch)
+                    self.bump()
                 continue
 
             if ch == "+":
@@ -205,6 +217,20 @@ class Tokenizer:
                     self.bump()
                     continue
 
+            if ch == '"':
+                start = self.index
+                out = self.bump()
+                ch = self.peek()
+                while ch != '"':
+                    out += ch
+                    if ch == "\0" or ch == "\n":
+                        raise AssertionError(self.err_at(self.index, "unclosed string literal"))
+                    self.bump()
+                    ch = self.peek()
+                out += self.bump()
+                self.add(TokenType.String, out, Span(start, self.index))
+                continue
+
             if self.is_num(ch):
                 num = ""
                 peeked = ch
@@ -230,8 +256,7 @@ class Tokenizer:
                     keyword if keyword is not None else TokenType.Ident, ident, Span(start_index, self.index))
                 continue
 
-            raise AssertionError(self.err_at(
-                self.index, "Unknown character"))
+            raise AssertionError(self.err_at(self.index, f"Unknown character {ch}"))
 
         self.add_single(TokenType.Eof, "EOF")
         return self.tokens

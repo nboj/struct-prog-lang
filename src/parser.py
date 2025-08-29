@@ -2,6 +2,7 @@ from src.tokenizer import Token, TokenType
 from dataclasses import dataclass
 from typing import Protocol, Any, List
 from src.types import Span
+from src.source_map import SourceMap
 
 
 class Node(Protocol):
@@ -78,10 +79,12 @@ class CallExpr(Expr):
 class Parser:
     tokens: list[Token]
     index: int
+    sm: SourceMap
 
-    def __init__(self, tokens: list[Token]):
+    def __init__(self, tokens: list[Token], source_map: SourceMap):
         self.tokens = tokens
         self.index = 0
+        self.sm = source_map
 
     def advance(self) -> Token:
         assert self.index < len(
@@ -100,7 +103,7 @@ class Parser:
     def expect(self, kind: TokenType, msg: str) -> Token:
         if not self.at(kind):
             t = self.peek()
-            raise AssertionError(f"{msg} (got {t.kind} at {t.span})")
+            raise AssertionError(self.err_here(t, f"{msg} (got {t.kind})"))
         return self.advance()
 
     def consume_terminators(self):
@@ -116,7 +119,6 @@ class Parser:
                 raise AssertionError(
                     f"invalid assignment target at {left.span}")
             return Assign(target=left, value=value, span=Span(left.span.start, value.span.end))
-        # TODO: add eq
         return left
 
     def parse_binary(self, min_prec: int) -> Expr:
@@ -182,9 +184,12 @@ class Parser:
                 inner = self.parse_expr()
                 rparen = self.expect(TokenType.RParen, "expected )")
                 return Grouping(expr=inner, span=Span(lparen.span.start, rparen.span.end))
+            case TokenType.String:
+                tok = self.advance()
+                raw = tok.raw
+                return Literal(value=raw, span=tok.span)
             case _:
-                raise AssertionError(f"unexpected token {
-                                     tok.kind} at {tok.span}")
+                raise AssertionError(self.err_here(tok, "unexpected token"))
 
     def parse_stmt(self) -> Stmt:
         """
@@ -206,3 +211,60 @@ class Parser:
             self.consume_terminators()
         end = self.peek().span.end
         return Program(body=body, span=Span(start, end))
+
+    def err_here(self, tok: Token, msg: str) -> str:
+        (sline, scol), (eline, ecol) = self.sm.span_to_lc(tok.span)
+        lines = self.sm.text.splitlines(keepends=False)
+
+        def gutter_at(line: int):
+            return " | " + str(line+1) + " "
+        out = msg + "\n"
+        if sline - 2 >= 0:
+            out += gutter_at(sline-2) + lines[sline-2] + "\n"
+        if sline - 1 >= 0:
+            out += gutter_at(sline-1) + lines[sline-1] + "\n"
+            out += "".rjust((scol-1)+len(gutter_at(sline-1)), " ")
+            out += "".rjust(ecol-scol, "^")
+        return out
+
+    def to_err(self, node: Node, msg: str) -> str:
+        # Accept Node or raw Span
+        span = getattr(node, "span", node)
+
+        # Be tolerant of attribute name (you declared `sm` but set `source_map`)
+        (sline, scol), (eline, ecol) = self.sm.span_to_lc(span)
+        lines = self.sm.text.splitlines(keepends=False)
+
+        def get_line(ln: int) -> str:
+            return lines[ln - 1] if 1 <= ln <= len(lines) else ""
+
+        parts: list[str] = []
+        header = f"At {sline}:{
+            scol}" + (f"-{eline}:{ecol}" if (sline, scol) != (eline, ecol) else "")
+        parts.append(header)
+
+        if sline == eline:
+            line = get_line(sline)
+            parts.append(f" {sline:>4} | {line}")
+            width = max(1, ecol - scol)
+            caret = " " * (scol - 1) + "^" * width + f" {msg}"
+            parts.append("      | " + caret)
+        else:
+            # First line: underline from scol to end
+            first = get_line(sline)
+            parts.append(f" {sline:>4} | {first}")
+            first_carets = " " * (scol - 1) + "^" * \
+                max(1, max(0, len(first) - (scol - 1)))
+            parts.append("      | " + first_carets)
+
+            # Middle elided if span covers many lines
+            if eline - sline > 1:
+                parts.append("      | ...")
+
+            # Last line: underline from start to ecol-1
+            last = get_line(eline)
+            parts.append(f" {eline:>4} | {last}")
+            last_carets = "^" * max(1, min(max(0, ecol - 1), len(last)))
+            parts.append("      | " + last_carets + f" {msg}")
+
+        return "\n".join(parts)

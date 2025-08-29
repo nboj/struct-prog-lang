@@ -12,7 +12,7 @@ if __name__ == "__main__":
         tokenizer.debug_print()
         print(tokenizer.tokens_pretty_gutter())  # human-friendly with carets
 
-        parser = Parser(tokens)
+        parser = Parser(tokens, tokenizer.sm)
         parsed = parser.parse()
         print(f"parsed: \n{render_ast(root=parsed, source_map=tokenizer.sm, show_spans=False)}")
 
