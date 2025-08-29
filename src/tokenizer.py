@@ -1,4 +1,6 @@
 from enum import Enum
+from src.types import Span
+from src.source_map import SourceMap
 
 
 class TokenType(Enum):
@@ -17,6 +19,8 @@ class TokenType(Enum):
     RParen = "RParen"
     LCurly = "LCurly"
     RCurly = "RCurly"
+    Bang = "Bang"
+    Comma = "Comma"
     Dot = "Dot"
     Eof = "Eof"
 
@@ -25,20 +29,17 @@ class TokenType(Enum):
     If = "If"
     While = "While"
     Loop = "Loop"
-    Print = "Print"
 
 
 class Token:
     kind: TokenType
-    row: int
-    col: int
+    span: Span
     raw: str
 
-    def __init__(self, kind: TokenType, raw: str, row: int, col: int):
+    def __init__(self, kind: TokenType, raw: str, span: Span):
         self.kind = kind
         self.raw = raw
-        self.row = row
-        self.col = col
+        self.span = span
 
     def __repr__(self):
         return f"{self.raw}"
@@ -47,9 +48,8 @@ class Token:
 class Tokenizer:
     tokens: list[Token]
     text: str
-    row: int
-    col: int
     index: int
+    sm: SourceMap
     KEYWORDS: dict
 
     def __init__(self, text: str):
@@ -57,8 +57,8 @@ class Tokenizer:
         self.KEYWORDS = {
             "let": TokenType.Let,
             "if": TokenType.If,
-            "print": TokenType.Print,
         }
+        self.sm = SourceMap(text)
 
     def is_num(self, ch: str):
         return (ch >= '0' and ch <= '9')
@@ -72,25 +72,26 @@ class Tokenizer:
     def bump(self) -> str:
         tmp = self.peek()
         self.index += 1
-        if tmp == '\n':
-            self.row += 1
-            self.col = 1
-        else:
-            self.col += 1
         return tmp
 
     def peek(self) -> str:
-        if self.index >= len(self.text):
-            return "\0"
+        assert self.index < len(self.text), "tried peeking after last token"
         return self.text[self.index]
 
     def peek_next(self) -> str:
+        assert self.index < len(self.text)-1, "tried peeking after last token"
         if self.index+1 >= len(self.text):
             return "\0"
         return self.text[self.index+1]
 
-    def add(self, kind: TokenType, raw: str, row: int, col: int):
-        self.tokens.append(Token(kind, raw, row, col))
+    def add(self, kind: TokenType, raw: str, span: Span):
+        self.tokens.append(Token(kind, raw, span))
+
+    def add_single_at(self, kind: TokenType, raw: str, index: int):
+        self.tokens.append(Token(kind, raw, Span(index, index+1)))
+
+    def add_single(self, kind: TokenType, raw: str):
+        self.tokens.append(Token(kind, raw, Span(self.index, self.index+1)))
 
     def tokenize(self):
         self.tokens = []
@@ -105,69 +106,78 @@ class Tokenizer:
                 continue
 
             if ch == '\n':
-                self.add(TokenType.Nl, ch, self.row, self.col)
+                self.add_single(TokenType.Nl, ch)
                 self.bump()
                 continue
 
             if ch == "=":
-                row = self.row
-                col = self.col
+                index = self.index
                 self.bump()
                 if self.peek() == "=":
-                    self.add(TokenType.DbEq, ch+ch, row, col)
                     self.bump()
+                    self.add(TokenType.DbEq, ch+ch, Span(index, self.index))
                 else:
-                    self.add(TokenType.Eq, ch, row, col)
+                    self.add(TokenType.Eq, ch, Span(index, self.index))
                 continue
 
             if ch == "-":
-                self.add(TokenType.Minus, ch, self.row, self.col)
+                self.add_single(TokenType.Minus, ch)
                 self.bump()
                 continue
 
             if ch == ".":
-                self.add(TokenType.Dot, ch, self.row, self.col)
+                self.add_single(TokenType.Dot, ch)
                 self.bump()
                 continue
 
             if ch == "+":
-                self.add(TokenType.Plus, ch, self.row, self.col)
+                self.add_single(TokenType.Plus, ch)
+                self.bump()
+                continue
+
+            if ch == ",":
+                self.add_single(TokenType.Comma, ch)
                 self.bump()
                 continue
 
             if ch == "(":
-                self.add(TokenType.LParen, ch, self.row, self.col)
+                self.add_single(TokenType.LParen, ch)
                 self.bump()
                 continue
 
             if ch == ")":
-                self.add(TokenType.RParen, ch, self.row, self.col)
+                self.add_single(TokenType.RParen, ch)
                 self.bump()
                 continue
 
             if ch == "{":
-                self.add(TokenType.LCurly, ch, self.row, self.col)
+                self.add_single(TokenType.LCurly, ch)
                 self.bump()
                 continue
 
             if ch == "}":
-                self.add(TokenType.RCurly, ch, self.row, self.col)
+                self.add_single(TokenType.RCurly, ch)
                 self.bump()
                 continue
 
             if ch == "*":
-                self.add(TokenType.Star, ch, self.row, self.col)
+                self.add_single(TokenType.Star, ch)
+                self.bump()
+                continue
+
+            if ch == "!":
+                self.add_single(TokenType.Bang, ch)
                 self.bump()
                 continue
 
             if ch == "&":
-                start_row, start_col = self.row, self.col
+                start_index = self.index
                 self.bump()
                 if self.peek() == "&":
                     self.bump()
-                    self.add(TokenType.DoubleAmp, "&&", start_row, start_col)
+                    self.add(TokenType.DoubleAmp, "&&", Span(start_index, self.index))
                 else:
-                    self.add(TokenType.Amp, "&", start_row, start_col)
+                    self.add(TokenType.Amp, "&", Span(start_index, self.index))
                 continue
 
             if ch == "/":
@@ -177,8 +187,7 @@ class Tokenizer:
                         self.bump()
                     continue
                 elif next == "*":
-                    line = self.row
-                    col = self.col
+                    start_on = self.index
                     self.bump()  # /
                     self.bump()  # *
                     next = self.peek()
@@ -186,60 +195,53 @@ class Tokenizer:
                         self.bump()
                         next = self.peek()
                     if self.peek() == "\0":
-                        raise AssertionError(self.errstr(
-                            line, col, "Unterminated block comment"))
+                        raise AssertionError(self.err_at(
+                            start_on, "Unterminated block comment"))
                     self.bump()  # *
                     self.bump()  # /
                     continue
                 else:
-                    self.add(TokenType.Divide, ch, self.row, self.col)
+                    self.add_single(TokenType.Divide, "/")
                     self.bump()
                     continue
 
             if self.is_num(ch):
                 num = ""
                 peeked = ch
-                row = self.row
-                col = self.col
+                start_index = self.index
                 found_dot = False
                 while self.is_num(peeked) or (peeked == '.' and not found_dot):
                     if peeked == '.':
                         found_dot = True
                     num += self.bump()
                     peeked = self.peek()
-                self.add(TokenType.Number, num, row, col)
+                self.add(TokenType.Number, num, Span(start_index, self.index))
                 continue
 
             if self.is_alpha(ch):
                 ident = ""
                 peeked = ch
-                row = self.row
-                col = self.col
+                start_index = self.index
                 while self.is_alphanum(peeked):
                     ident += self.bump()
                     peeked = self.peek()
                 keyword = self.KEYWORDS.get(ident)
                 self.add(
-                    keyword if keyword is not None else TokenType.Ident, ident, row, col)
+                    keyword if keyword is not None else TokenType.Ident, ident, Span(start_index, self.index))
                 continue
 
-            raise AssertionError(self.errstr(
-                self.row, self.col, "Unknown character"))
+            raise AssertionError(self.err_at(
+                self.index, "Unknown character"))
 
-        self.add(TokenType.Eof, "EOF", self.row, self.col)
+        self.add_single(TokenType.Eof, "EOF")
         return self.tokens
 
-    def errstr(self, line: int, col: int, msg: str):
-        lines = self.text.split('\n')
-        final = f"At {line}:{col}\n"
-        if line-3 >= 0:
-            final += f" {line-2} | {lines[line-3]}\n"
-        if line-2 >= 0:
-            final += f" {line-1} | {lines[line-2]}\n"
-        final += f" {line} | {lines[line-1]}\n"
-        final += "".rjust(len(f" {line} | ") + col-1, " ")
-        final += f"^ {msg}"
-        return final
+    def err_at(self, off: int, msg: str) -> str:
+        (line, col) = self.sm.offset_to_line_col(off)
+        src_lines = self.text.splitlines()
+        src = src_lines[line - 1] if 1 <= line <= len(src_lines) else ""
+        caret = " " * (col - 1) + "^ " + msg
+        return f"At {line}:{col}\n {line:>4} | {src}\n       | {caret}"
 
     def debug_print(self):
         print(self.text)
@@ -274,27 +276,33 @@ class Tokenizer:
         return s.encode('unicode_escape').decode('ascii')
 
     def tokens_debug(self) -> str:
-        lines = []
+        out = []
         for t in self.tokens:
-            lines.append(
-                f'Token {{ kind: {t.kind.name}, raw: "{self._escape(t.raw)}", pos: {
-                    t.row}:{t.col} }}'
+            (sline, scol), (eline, ecol) = self.sm.span_to_lc(t.span)
+            out.append(
+                f'Token {{ kind: {t.kind.name}, raw: "{self._escape(t.raw)}", '
+                f'span: [{t.span.start},{t.span.end}) @ {sline}:{scol}-{eline}:{ecol} }}'
             )
-        return "\n".join(lines)
+        return "\n".join(out)
 
     def tokens_pretty_gutter(self) -> str:
-        src_lines = self.text.splitlines(keepends=False)
-        gutter = []
-        for i, line in enumerate(src_lines, start=1):
-            gutter.append(f"{i:>4} | {line}")
-            carets = [" "]*len(line)
+        lines = self.text.splitlines(keepends=False)
+        pieces = []
+        for ln, line in enumerate(lines, start=1):
+            line_start = self.sm.line_starts[ln - 1]
+            line_end = self.sm.line_starts[ln] if ln < len(self.sm.line_starts) else len(self.text)
+            carets = [" "] * len(line)
             for t in self.tokens:
-                if t.row == i and t.raw and t.raw != "\n":
-                    start = t.col - 1
-                    end = start + max(1, len(t.raw))
-                    for j in range(start, min(end, len(line))):
-                        carets[j] = "^"
+                s = max(t.span.start, line_start)
+                e = min(t.span.end,   line_end)
+                if s < e:
+                    s_col = s - line_start
+                    e_col = max(s_col + 1, e - line_start)  # at least one caret
+                    for i in range(s_col, min(e_col, len(line))):
+                        carets[i] = "^"
+            pieces.append(f"{ln:>4} | {line}")
             if any(c != " " for c in carets):
-                gutter.append("     | " + "".join(carets))
-        listing = self.tokens_debug()
-        return "\n".join(gutter) + "\n\n" + listing
+                pieces.append("     | " + "".join(carets))
+        pieces.append("")
+        pieces.append(self.tokens_debug())
+        return "\n".join(pieces)
