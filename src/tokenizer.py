@@ -15,10 +15,10 @@ class TokenType(Enum):
     Eq = "Equals"
     DbEq = "DoubleEquals"
     Divide = "Divide"
-    LParen = "LParen"
-    RParen = "RParen"
-    LCurly = "LCurly"
-    RCurly = "RCurly"
+    OpenParen = "OpenParen"
+    CloseParen = "CloseParen"
+    OpenCurly = "OpenCurly"
+    CloseCurly = "CloseCurly"
     Bang = "Bang"
     Comma = "Comma"
     Dot = "Dot"
@@ -153,22 +153,22 @@ class Tokenizer:
                 continue
 
             if ch == "(":
-                self.add_single(TokenType.LParen, ch)
+                self.add_single(TokenType.OpenParen, ch)
                 self.bump()
                 continue
 
             if ch == ")":
-                self.add_single(TokenType.RParen, ch)
+                self.add_single(TokenType.CloseParen, ch)
                 self.bump()
                 continue
 
             if ch == "{":
-                self.add_single(TokenType.LCurly, ch)
+                self.add_single(TokenType.OpenCurly, ch)
                 self.bump()
                 continue
 
             if ch == "}":
-                self.add_single(TokenType.RCurly, ch)
+                self.add_single(TokenType.CloseCurly, ch)
                 self.bump()
                 continue
 
@@ -219,7 +219,8 @@ class Tokenizer:
 
             if ch == '"':
                 start = self.index
-                out = self.bump()
+                out = ""
+                self.bump()
                 ch = self.peek()
                 while ch != '"':
                     out += ch
@@ -227,7 +228,7 @@ class Tokenizer:
                         raise AssertionError(self.err_at(self.index, "unclosed string literal"))
                     self.bump()
                     ch = self.peek()
-                out += self.bump()
+                self.bump()
                 self.add(TokenType.String, out, Span(start, self.index))
                 continue
 
@@ -276,7 +277,7 @@ class Tokenizer:
         final = "[\n"
         indent_level = 1
         for token in self.tokens:
-            if token.kind == TokenType.RCurly:
+            if token.kind == TokenType.CloseCurly:
                 indent_level -= 1
             if token.kind == TokenType.Nl:
                 final += "\n"
@@ -289,7 +290,7 @@ class Tokenizer:
                 extra = target_len - (len(token.raw) + pad)
             final += " " * (pad + extra)
             final += f":{token.kind.name}, \n"
-            if token.kind == TokenType.LCurly:
+            if token.kind == TokenType.OpenCurly:
                 indent_level += 1
         if len(final) >= 2:
             final = final[:-2]

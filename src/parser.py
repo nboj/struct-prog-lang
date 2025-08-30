@@ -152,15 +152,15 @@ class Parser:
     def parse_postfix(self) -> Expr:
         primary = self.parse_primary()
         while True:
-            if self.at(TokenType.LParen):
+            if self.at(TokenType.OpenParen):
                 self.advance()  # left paren
                 args: List[Expr] = []
-                if not self.at(TokenType.RParen):
+                if not self.at(TokenType.CloseParen):
                     args.append(self.parse_expr())
                     while self.at(TokenType.Comma):
                         self.advance()
                         args.append(self.parse_expr())
-                r = self.expect(TokenType.RParen,
+                r = self.expect(TokenType.CloseParen,
                                 "expected )")  # right paren
                 primary = CallExpr(callee=primary, args=args,
                                    span=Span(primary.span.start, r.span.end))
@@ -179,10 +179,10 @@ class Parser:
             case TokenType.Ident:
                 tok = self.advance()
                 return Variable(name=tok, span=tok.span)
-            case TokenType.LParen:
+            case TokenType.OpenParen:
                 lparen = self.advance()
                 inner = self.parse_expr()
-                rparen = self.expect(TokenType.RParen, "expected )")
+                rparen = self.expect(TokenType.CloseParen, "expected )")
                 return Grouping(expr=inner, span=Span(lparen.span.start, rparen.span.end))
             case TokenType.String:
                 tok = self.advance()
