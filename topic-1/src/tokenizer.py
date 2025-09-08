@@ -13,6 +13,7 @@ class TokenType(Enum):
     Ident = "Ident"
     Nl = "Newline"
     Eq = "Equals"
+    NEq = "NotEquals"
     DbEq = "DoubleEquals"
     Divide = "Divide"
     OpenParen = "OpenParen"
@@ -177,11 +178,6 @@ class Tokenizer:
                 self.bump()
                 continue
 
-            if ch == "!":
-                self.add_single(TokenType.Bang, ch)
-                self.bump()
-                continue
-
             if ch == "&":
                 start_index = self.index
                 self.bump()
@@ -190,6 +186,16 @@ class Tokenizer:
                     self.add(TokenType.DoubleAmp, "&&", Span(start_index, self.index))
                 else:
                     self.add(TokenType.Amp, "&", Span(start_index, self.index))
+                continue
+
+            if ch == "!":
+                start_index = self.index
+                self.bump()
+                if self.peek() == "=":
+                    self.bump()
+                    self.add(TokenType.NEq, "!=", Span(start_index, self.index))
+                else:
+                    self.add(TokenType.Bang, "!", Span(start_index, self.index))
                 continue
 
             if ch == "/":

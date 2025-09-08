@@ -5,6 +5,8 @@ from src.types import Span
 from src.source_map import SourceMap
 
 
+# TODO: EBNF
+
 class Node(Protocol):
     span: Span
 
@@ -17,6 +19,13 @@ class Program(Node):
 
 class Stmt(Node):
     span: Span
+
+
+@dataclass(frozen=True)
+class IfStmt(Stmt):
+    condition: "Expr"
+    then_block: List["Stmt"]
+    else_block: List["Stmt"]
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,13 @@ class Assign(Expr):
 class Binary(Expr):
     left: Expr
     op: Token
+    right: Expr
+    span: Span
+
+
+@dataclass(frozen=True)
+class Comparison(Expr):
+    left: Expr
     right: Expr
     span: Span
 
@@ -119,6 +135,14 @@ class Parser:
                 raise AssertionError(
                     f"invalid assignment target at {left.span}")
             return Assign(target=left, value=value, span=Span(left.span.start, value.span.end))
+        elif self.at(TokenType.DbEq):
+            dbeq = self.advance()
+            right = self.parse_expr()
+            return Comparison(left=left, right=right, span=Span(left.span.start, right.span.end))
+        elif self.at(TokenType.NEq):
+            neq = self.advance()
+            right = self.parse_expr()
+            return Unary(op=Token(kind=TokenType.Bang, raw="!", span=neq.span), expr=Comparison(left=left, right=right, span=Span(left.span.start, right.span.end)), span=Span(left.span.start, right.span.end))
         return left
 
     def parse_binary(self, min_prec: int) -> Expr:
@@ -189,7 +213,8 @@ class Parser:
                 raw = tok.raw
                 return Literal(value=raw, span=tok.span)
             case _:
-                raise AssertionError(self.err_here(tok, "unexpected token"))
+                raise AssertionError(self.err_here(
+                    tok, f"unexpected token {tok.kind}"))
 
     def parse_stmt(self) -> Stmt:
         """
@@ -198,6 +223,20 @@ class Parser:
         token = self.peek()
         start = token.span.start
         match token.kind:
+            case TokenType.If:
+                self.advance()
+                expr = self.parse_expr()
+                token = self.expect(TokenType.OpenCurly, "Expected {")
+                self.consume_terminators()
+                stmts: List[Stmt] = []
+                while token.kind != TokenType.CloseCurly:
+                    stmts.append(self.parse_stmt())
+                    self.consume_terminators()
+                    token = self.advance()
+                    if token.kind == TokenType.Eof:
+                        raise AssertionError(self.err_here(
+                            "reached EOF before closing"))
+                return IfStmt(condition=expr, then_block=stmts, else_block=[])
             case _:
                 expr = self.parse_expr()
                 return ExprStmt(expr=expr, span=Span(start, expr.span.end))
@@ -228,10 +267,8 @@ class Parser:
         return out
 
     def to_err(self, node: Node, msg: str) -> str:
-        # Accept Node or raw Span
         span = getattr(node, "span", node)
 
-        # Be tolerant of attribute name (you declared `sm` but set `source_map`)
         (sline, scol), (eline, ecol) = self.sm.span_to_lc(span)
         lines = self.sm.text.splitlines(keepends=False)
 
@@ -250,18 +287,15 @@ class Parser:
             caret = " " * (scol - 1) + "^" * width + f" {msg}"
             parts.append("      | " + caret)
         else:
-            # First line: underline from scol to end
             first = get_line(sline)
             parts.append(f" {sline:>4} | {first}")
             first_carets = " " * (scol - 1) + "^" * \
                 max(1, max(0, len(first) - (scol - 1)))
             parts.append("      | " + first_carets)
 
-            # Middle elided if span covers many lines
             if eline - sline > 1:
                 parts.append("      | ...")
 
-            # Last line: underline from start to ecol-1
             last = get_line(eline)
             parts.append(f" {eline:>4} | {last}")
             last_carets = "^" * max(1, min(max(0, ecol - 1), len(last)))
