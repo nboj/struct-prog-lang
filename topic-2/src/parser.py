@@ -22,6 +22,12 @@ class Stmt(Node):
 
 
 @dataclass(frozen=True)
+class LetStmt(Stmt):
+    assign: "Assign"
+    span: Span
+
+
+@dataclass(frozen=True)
 class IfStmt(Stmt):
     condition: "Expr"
     then_block: List["Stmt"]
@@ -35,6 +41,13 @@ class ExprStmt(Stmt):
 
 
 class Expr(Node):
+    span: Span
+
+
+@dataclass(frozen=True)
+class PropertyAccess(Expr):
+    obj: Expr
+    name: Token
     span: Span
 
 
@@ -131,9 +144,9 @@ class Parser:
         if self.at(TokenType.Eq):
             eq = self.advance()
             value = self.parse_expr()
-            if not isinstance(left, (Variable,)):
+            if not isinstance(left, (Variable, PropertyAccess)):
                 raise AssertionError(
-                    f"invalid assignment target at {left.span}")
+                    self.to_err(left, "invalid assignment target at {left.span}"))
             return Assign(target=left, value=value, span=Span(left.span.start, value.span.end))
         elif self.at(TokenType.DbEq):
             dbeq = self.advance()
@@ -189,6 +202,12 @@ class Parser:
                 primary = CallExpr(callee=primary, args=args,
                                    span=Span(primary.span.start, r.span.end))
                 continue
+            if self.at(TokenType.Dot):
+                self.advance()
+                ident = self.expect(TokenType.Ident,  "expected ident")
+                primary = PropertyAccess(obj=primary, name=ident, span=Span(
+                    primary.span.start, ident.span.end))
+                continue
             break
         return primary
 
@@ -223,10 +242,18 @@ class Parser:
         token = self.peek()
         start = token.span.start
         match token.kind:
+            case TokenType.Let:
+                self.advance()
+                assign = self.parse_expr()
+                if not isinstance(assign, Assign):
+                    raise AssertionError(self.to_err(
+                        assign, f"incorrect lhs node: {assign}"))
+                self.expect(TokenType.Semi, "expected ;")
+                return LetStmt(assign=assign, span=Span(start, assign.span.end))
             case TokenType.If:
                 self.advance()
                 expr = self.parse_expr()
-                token = self.expect(TokenType.OpenCurly, "Expected {")
+                token = self.expect(TokenType.OpenCurly, "expected {")
                 self.consume_terminators()
                 stmts: List[Stmt] = []
                 while token.kind != TokenType.CloseCurly:
@@ -239,6 +266,7 @@ class Parser:
                 return IfStmt(condition=expr, then_block=stmts, else_block=[])
             case _:
                 expr = self.parse_expr()
+                self.expect(TokenType.Semi, "expected ;")
                 return ExprStmt(expr=expr, span=Span(start, expr.span.end))
 
     def parse(self):
@@ -276,8 +304,7 @@ class Parser:
             return lines[ln - 1] if 1 <= ln <= len(lines) else ""
 
         parts: list[str] = []
-        header = f"At {sline}:{
-            scol}" + (f"-{eline}:{ecol}" if (sline, scol) != (eline, ecol) else "")
+        header = f"At {sline}:{scol}" + (f"-{eline}:{ecol}" if (sline, scol) != (eline, ecol) else "")
         parts.append(header)
 
         if sline == eline:

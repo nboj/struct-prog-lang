@@ -1,8 +1,7 @@
 let a = 2;
 a = a + 4;
-
 let b = a;
-b = a + b + 2;
+b = b==2;
+print(a+b);
 
-print(a + b);
 print("a" + " + " + "b");

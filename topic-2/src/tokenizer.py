@@ -20,6 +20,7 @@ class TokenType(Enum):
     CloseParen = "CloseParen"
     OpenCurly = "OpenCurly"
     CloseCurly = "CloseCurly"
+    Semi = "SemiColon"
     Bang = "Bang"
     Comma = "Comma"
     Dot = "Dot"
@@ -170,6 +171,11 @@ class Tokenizer:
 
             if ch == "}":
                 self.add_single(TokenType.CloseCurly, ch)
+                self.bump()
+                continue
+
+            if ch == ";":
+                self.add_single(TokenType.Semi, ch)
                 self.bump()
                 continue
 
