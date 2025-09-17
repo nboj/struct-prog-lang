@@ -10,6 +10,7 @@ class TokenType(Enum):
     Star = "Star"
     Amp = "Amp"
     DoubleAmp = "DoubleAmp"
+    DoublePipe = "DoublePipe"
     Ident = "Ident"
     Nl = "Newline"
     Eq = "Equals"
@@ -201,13 +202,23 @@ class Tokenizer:
                 self.add_single(TokenType.Star, ch)
                 self.bump()
                 continue
+            if ch == "|":
+                if self.peek_next() == "|":
+                    start_index = self.index
+                    self.bump()
+                    self.bump()
+                    self.add(TokenType.DoublePipe, raw="||", span=Span(start_index, self.index))
+                    continue
+                else:
+                    raise AssertionError(self.err_at(self.index, f"Unknown character next to pipe: {self.peek_next()}"))
 
             if ch == "&":
                 start_index = self.index
                 self.bump()
                 if self.peek() == "&":
                     self.bump()
-                    self.add(TokenType.DoubleAmp, "&&", Span(start_index, self.index))
+                    self.add(TokenType.DoubleAmp, "&&",
+                             Span(start_index, self.index))
                 else:
                     self.add(TokenType.Amp, "&", Span(start_index, self.index))
                 continue
@@ -217,9 +228,11 @@ class Tokenizer:
                 self.bump()
                 if self.peek() == "=":
                     self.bump()
-                    self.add(TokenType.NEq, "!=", Span(start_index, self.index))
+                    self.add(TokenType.NEq, "!=", Span(
+                        start_index, self.index))
                 else:
-                    self.add(TokenType.Bang, "!", Span(start_index, self.index))
+                    self.add(TokenType.Bang, "!", Span(
+                        start_index, self.index))
                 continue
 
             if ch == "/":
@@ -255,7 +268,8 @@ class Tokenizer:
                 while ch != '"':
                     out += ch
                     if ch == "\0" or ch == "\n":
-                        raise AssertionError(self.err_at(self.index, "unclosed string literal"))
+                        raise AssertionError(self.err_at(
+                            self.index, "unclosed string literal"))
                     self.bump()
                     ch = self.peek()
                 self.bump()
@@ -287,7 +301,8 @@ class Tokenizer:
                     keyword if keyword is not None else TokenType.Ident, ident, Span(start_index, self.index))
                 continue
 
-            raise AssertionError(self.err_at(self.index, f"Unknown character {ch}"))
+            raise AssertionError(self.err_at(
+                self.index, f"Unknown character {ch}"))
 
         self.add_single(TokenType.Eof, "EOF")
         return self.tokens
@@ -337,7 +352,8 @@ class Tokenizer:
             (sline, scol), (eline, ecol) = self.sm.span_to_lc(t.span)
             out.append(
                 f'Token {{ kind: {t.kind.name}, raw: "{self._escape(t.raw)}", '
-                f'span: [{t.span.start},{t.span.end}) @ {sline}:{scol}-{eline}:{ecol} }}'
+                f'span: [{t.span.start},{
+                    t.span.end}) @ {sline}:{scol}-{eline}:{ecol} }}'
             )
         return "\n".join(out)
 
@@ -346,14 +362,16 @@ class Tokenizer:
         pieces = []
         for ln, line in enumerate(lines, start=1):
             line_start = self.sm.line_starts[ln - 1]
-            line_end = self.sm.line_starts[ln] if ln < len(self.sm.line_starts) else len(self.text)
+            line_end = self.sm.line_starts[ln] if ln < len(
+                self.sm.line_starts) else len(self.text)
             carets = [" "] * len(line)
             for t in self.tokens:
                 s = max(t.span.start, line_start)
                 e = min(t.span.end,   line_end)
                 if s < e:
                     s_col = s - line_start
-                    e_col = max(s_col + 1, e - line_start)  # at least one caret
+                    # at least one caret
+                    e_col = max(s_col + 1, e - line_start)
                     for i in range(s_col, min(e_col, len(line))):
                         carets[i] = "^"
             pieces.append(f"{ln:>4} | {line}")

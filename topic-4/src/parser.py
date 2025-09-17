@@ -172,10 +172,11 @@ class Parser:
         return left
 
     _PREC = {
-        TokenType.NEq: 1, TokenType.DbEq: 1,
-        TokenType.Lt: 2, TokenType.Gt: 2,
-        TokenType.Plus: 3, TokenType.Minus: 3,
-        TokenType.Star: 4, TokenType.Divide: 4,
+        TokenType.DoubleAmp: 1, TokenType.DoublePipe: 1,
+        TokenType.NEq: 2, TokenType.DbEq: 2,
+        TokenType.Lt: 3, TokenType.Gt: 3,
+        TokenType.Plus: 4, TokenType.Minus: 4,
+        TokenType.Star: 5, TokenType.Divide: 5,
     }
 
     def precedence(self, tok: Token):

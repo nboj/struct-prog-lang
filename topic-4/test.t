@@ -75,8 +75,12 @@ if (1==1) {
     if (2==2) {
         if (a < b) {
             print("A IS LESS THAN B");
+        } else {
+            print("Error");
         }
         print("outside A IS LESS THAN B");
+    } else {
+        print("Error");
     }
     print("outside outside A IS LESS THAN B");
 }

@@ -4,7 +4,7 @@ from src.debug_ast import render_ast
 
 
 def test_call():
-    tokenizer = Tokenizer("print(1+1)")
+    tokenizer = Tokenizer("print(1+1);")
     parser = Parser(tokenizer.tokenize(), tokenizer.sm)
     parsed = parser.parse()
     assert isinstance(parsed, Program)
@@ -17,7 +17,7 @@ def test_call():
 
 def test_syntax():
     try:
-        tokenizer = Tokenizer("print(1++1)")
+        tokenizer = Tokenizer("print(1++1);")
         parser = Parser(tokenizer.tokenize(), tokenizer.sm)
         parser.parse()
     except Exception:
@@ -27,7 +27,7 @@ def test_syntax():
 
 def test_syntax2():
     try:
-        tokenizer = Tokenizer("print()")
+        tokenizer = Tokenizer("print();")
         parser = Parser(tokenizer.tokenize(), tokenizer.sm)
         parsed = parser.parse()
         assert isinstance(parsed, Program)
