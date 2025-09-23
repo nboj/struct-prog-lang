@@ -21,7 +21,7 @@ if __name__ == "__main__":
             print(f"parsed: \n{render_ast(root=parsed,
                   source_map=tokenizer.sm, show_spans=False)}")
             print(parsed)
-            vm = VM(parsed)
+            vm = VM(parsed, tokenizer.sm)
             vm.run()
 
         else:

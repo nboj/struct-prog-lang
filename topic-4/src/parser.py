@@ -148,14 +148,6 @@ class Parser:
                 raise AssertionError(
                     self.to_err(left, "invalid assignment target at {left.span}"))
             return Assign(target=left, value=value, span=Span(left.span.start, value.span.end))
-        elif self.at(TokenType.DbEq):
-            dbeq = self.advance()
-            right = self.parse_expr()
-            return Comparison(left=left, right=right, span=Span(left.span.start, right.span.end))
-        elif self.at(TokenType.NEq):
-            neq = self.advance()
-            right = self.parse_expr()
-            return Unary(op=Token(kind=TokenType.Bang, raw="!", span=neq.span), expr=Comparison(left=left, right=right, span=Span(left.span.start, right.span.end)), span=Span(left.span.start, right.span.end))
         return left
 
     def parse_binary(self, min_prec: int) -> Expr:

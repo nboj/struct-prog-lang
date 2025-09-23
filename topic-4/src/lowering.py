@@ -1,5 +1,17 @@
 from src.source_map import SourceMap
 from src.parser import Program
+from dataclasses import dataclass
+from typing import List
+
+
+@dataclass(frozen=True)
+class Instr:
+    pass
+
+
+@dataclass(frozen=True)
+class Block:
+    instrs: List[Instr]
 
 
 class Lowering:
@@ -9,3 +21,6 @@ class Lowering:
     def __init__(self, program: Program, source_map: SourceMap):
         self.sm = source_map
         self.program = program
+
+    def lower(self):
+        pass

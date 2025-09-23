@@ -1,14 +1,19 @@
-from src.parser import Program, ExprStmt, CallExpr, Expr, Binary, Literal, Grouping, IfStmt, Comparison, Unary, LetStmt, Variable, Assign
+from src.parser import Parser, Program, ExprStmt, CallExpr, Expr, Binary, Literal, Grouping, IfStmt, Comparison, Unary, LetStmt, Variable, Assign
 from src.tokenizer import TokenType, Token, Span
+from src.source_map import SourceMap
+from typing import List
 
 
 class VM:
     program: Program
     ip: int = 0
-    stack = [{}]
+    stack: List[dict]
+    sm: SourceMap
 
-    def __init__(self, program: Program):
+    def __init__(self, program: Program, source_map: SourceMap):
         self.program = program
+        self.sm = source_map
+        self.stack = [{}]
 
     def bump(self):
         self.ip += 1
@@ -36,12 +41,10 @@ class VM:
                     raise AssertionError(f"Uhnandled callee type {
                                          stmt.expr.callee}")
             elif isinstance(stmt.expr, Assign):
-                if not self.eval(stmt.expr.target):
-                    raise AssertionError(
-                        f"Tried reassignment on a None lhs {stmt.expr}")
                 self.run_assignment(stmt.expr)
                 self.bump()
             elif isinstance(stmt.expr, Variable):
+                print("RHERHETRES")
                 if stmt.expr.name.raw == "cauman":
                     target = Variable(name=Token(kind=TokenType.Ident, raw="_kentid_", span=Span(0, 0)), span=Span(0, 0))
                     value = Literal(value="cauman@kent.edu", span=Span(0, 0))
@@ -83,6 +86,18 @@ class VM:
 
     def eval(self, expr: Expr):
         if isinstance(expr, Binary):
+            if expr.op.kind == TokenType.DoubleAmp:
+                left = self.eval(expr.left)
+                if left:
+                    return self.eval(expr.right)
+                else:
+                    return False
+            if expr.op.kind == TokenType.DoublePipe:
+                left = self.eval(expr.left)
+                if left:
+                    return True
+                else:
+                    return self.eval(expr.right)
             left = self.eval(expr.left)
             right = self.eval(expr.right)
             if expr.op.kind == TokenType.Plus:
@@ -101,10 +116,6 @@ class VM:
                 return left == right
             elif expr.op.kind == TokenType.NEq:
                 return left != right
-            elif expr.op.kind == TokenType.DoubleAmp:
-                return left and right
-            elif expr.op.kind == TokenType.DoublePipe:
-                return left or right
             else:
                 raise AssertionError(f"Op not supported in VM {expr.op}")
         elif isinstance(expr, Unary):
@@ -119,7 +130,7 @@ class VM:
                 if expr.name.raw in self.stack[index]:
                     return self.stack[index][expr.name.raw]
                 index -= 1
-            return None
+            raise AssertionError(self.sm.to_err(expr, f"Tried referencing an undefined variable"))
         elif isinstance(expr, Comparison):
             left = self.eval(expr.left)
             right = self.eval(expr.right)
