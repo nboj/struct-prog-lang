@@ -4,6 +4,7 @@ from src.tokenizer import Tokenizer, Token
 from src.parser import Parser
 from src.debug_ast import render_ast
 from src.vm import VM
+from src.binder import Binder
 
 if __name__ == "__main__":
     args = sys.argv
@@ -21,6 +22,12 @@ if __name__ == "__main__":
             print(f"parsed: \n{render_ast(root=parsed,
                   source_map=tokenizer.sm, show_spans=False)}")
             print(parsed)
+
+            binder = Binder(program=parsed, source_map=tokenizer.sm)
+            bound = binder.bind()
+            print(f"parsed: \n{render_ast(root=bound,
+                  source_map=tokenizer.sm, show_spans=False)}")
+
             vm = VM(parsed, tokenizer.sm)
             vm.run()
 
