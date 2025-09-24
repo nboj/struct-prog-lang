@@ -1,4 +1,4 @@
-from src.parser import Program, IfStmt, Expr, Stmt, LetStmt, Binary, Unary, Variable, Comparison, CallExpr, Literal, Grouping, Assign, ExprStmt
+from src.parser import Program, IfStmt, Expr, Stmt, LetStmt, Binary, Unary, Variable, CallExpr, Literal, Grouping, Assign, ExprStmt, BlockStmt
 from src.tokenizer import Token, TokenType, Span
 from src.source_map import SourceMap
 from typing import List, Optional, Union, Protocol, Any
@@ -43,11 +43,16 @@ class BoundNode(Protocol):
 
 @dataclass(frozen=True)
 class BoundProgram(BoundNode):
-    body: List["Stmt"]
+    body: List["BoundStmt"]
     span: Span
 
 
 class BoundStmt(BoundNode):
+    span: Span
+
+@dataclass(frozen=True)
+class BoundBlockStmt(BoundStmt):
+    stmts: List[BoundStmt]
     span: Span
 
 
@@ -96,7 +101,7 @@ class BoundUnary(BoundExpr):
 
 @dataclass(frozen=True)
 class BoundAssign(BoundExpr):
-    target: BoundExpr
+    target: Symbol
     value: BoundExpr
     span: Span
 
@@ -105,13 +110,6 @@ class BoundAssign(BoundExpr):
 class BoundBinary(BoundExpr):
     left: BoundExpr
     op: Token
-    right: BoundExpr
-    span: Span
-
-
-@dataclass(frozen=True)
-class BoundComparison(BoundExpr):
-    left: BoundExpr
     right: BoundExpr
     span: Span
 
@@ -145,15 +143,31 @@ class Binder:
         self.program = program
         self.sm = source_map
         self.scope = Scope()
+        self.scope.symbols = [
+            Symbol(-1, "print"),
+        ]
         self.var_count = 0
 
-    def find_symbol(self, symbol: Symbol, scope: Optional[Scope] = None):
-        if scope is None:
-            return None
-        for scope_symbol in scope.symbols:
-            if symbol.name == scope_symbol.name:
-                return scope_symbol
-        return self.find_symbol(symbol, scope.parent)
+    def lookup_here(self, name: str):
+        for sym in self.scope.symbols:
+            if sym.name == name:
+                return sym
+        return None
+
+    def lookup(self, name: str):
+        scope = self.scope
+        while scope is not None:
+            for sym in scope.symbols:
+                if name == sym.name:
+                    return sym
+            scope = scope.parent
+        return None
+
+    def declare(self, name: str):
+        sym = Symbol(self.var_count, name)
+        self.var_count += 1
+        self.scope.symbols.append(sym)
+        return sym
 
     def bind_expression(self, expr: Expr):
         if isinstance(expr, Binary):
@@ -162,24 +176,27 @@ class Binder:
             return BoundBinary(left, expr.op, right, expr.span)
         elif isinstance(expr, Unary):
             return BoundUnary(expr.op, self.bind_expression(expr.expr), expr.span)
+        elif isinstance(expr, Assign):
+            target = self.bind_expression(expr.target)
+            value = self.bind_expression(expr.value)
+            return BoundAssign(target, value, expr.span)
         elif isinstance(expr, Variable):
-            expr_id = self.var_count
-            symbol = Symbol(expr_id, expr.name.raw)
-            found = self.find_symbol(symbol, self.scope)
-            if found is None:
-                self.var_count += 1
-                self.scope.symbols.append(symbol)
-            else:
-                symbol = found
+            symbol = self.lookup(expr.name.raw)
+            if symbol is None:
+                raise AssertionError(
+                    f"Tried accessing undefined variable {expr}")
             return BoundVariable(symbol, expr.span)
-        elif isinstance(expr, Comparison):
-            left = self.bind_expression(expr.left)
-            right = self.bind_expression(expr.right)
-            return BoundComparison(left, right, expr.span)
         elif isinstance(expr, Literal):
             return BoundLiteral(expr.value, expr.span)
         elif isinstance(expr, Grouping):
             return self.bind_expression(expr.expr)
+        elif isinstance(expr, CallExpr):
+            callee = self.bind_expression(expr.callee)
+            args = []
+            for arg in expr.args:
+                args.append(self.bind_expression(arg))
+            return BoundCallExpr(callee, args, expr.span)
+
         else:
             raise AssertionError(f"Expr not handled in VM {expr}")
 
@@ -209,20 +226,40 @@ class Binder:
 
     def bind_let(self, stmt: LetStmt):
         assert isinstance(stmt.assign, Assign)
-        target = self.bind_expression(stmt.assign.target)
+        found = self.lookup_here(stmt.assign.target.name.raw)
+        target = None
+        if found:
+            target = BoundVariable(found, stmt.assign.target.span)
+        else:
+            target = BoundVariable(self.declare(
+                stmt.assign.target.name.raw), stmt.assign.target.span)
         value = self.bind_expression(stmt.assign.value)
         return BoundLetStmt(BoundAssign(target, value, stmt.assign.span), stmt.span)
 
     def bind_expr_stmt(self, stmt: ExprStmt):
-        return BoundExprStmt(stmt.expr, stmt.span)
+        print(stmt)
+        if isinstance(stmt.expr, Variable) and stmt.expr.name.raw == "cauman":
+            return self.bind_let(LetStmt(Assign(Variable(Token(TokenType.Ident, "_kentid_", Span(0, 0)), Span(0, 0)), Literal("cauman@kent.edu", Span(0, 0)), Span(0, 0)), stmt.span))
+
+        return BoundExprStmt(self.bind_expression(stmt.expr), stmt.span)
+
+    def bind_block(self, stmt: BlockStmt):
+        stmts: List[BoundStmt] = []
+        for s in  stmt.stmts:
+            stmts.append(self.bind_stmt(s))
+        return BoundBlockStmt(stmts, stmt.span)
 
     def bind_stmt(self, stmt: Stmt):
         if isinstance(stmt, IfStmt):
             return self.bind_if(stmt)
         elif isinstance(stmt, LetStmt):
             return self.bind_let(stmt)
-        else:
+        elif isinstance(stmt, ExprStmt):
             return self.bind_expr_stmt(stmt)
+        elif isinstance(stmt, BlockStmt):
+            return self.bind_block(stmt)
+        else:
+            raise AssertionError(f"Unhandled stmt in binder: {stmt}")
 
     def bind(self):
         stmts: List[BoundStmt] = []

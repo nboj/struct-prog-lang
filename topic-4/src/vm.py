@@ -1,4 +1,4 @@
-from src.parser import Parser, Program, ExprStmt, CallExpr, Expr, Binary, Literal, Grouping, IfStmt, Comparison, Unary, LetStmt, Variable, Assign
+from src.parser import Parser, Program, ExprStmt, CallExpr, Expr, Binary, Literal, Grouping, IfStmt, Unary, LetStmt, Variable, Assign, BlockStmt
 from src.tokenizer import TokenType, Token, Span
 from src.source_map import SourceMap
 from typing import List
@@ -75,6 +75,11 @@ class VM:
             assign = stmt.assign
             self.run_assignment(assign)
             self.bump()
+        elif isinstance(stmt, BlockStmt):
+            for s in stmt.stmts:
+                self.run_stmt(s)
+                self.ip -= 1
+            self.bump()
         else:
             raise AssertionError(f"Unhandled stmt in VM {stmt}")
 
@@ -131,10 +136,6 @@ class VM:
                     return self.stack[index][expr.name.raw]
                 index -= 1
             raise AssertionError(self.sm.to_err(expr, f"Tried referencing an undefined variable"))
-        elif isinstance(expr, Comparison):
-            left = self.eval(expr.left)
-            right = self.eval(expr.right)
-            return left == right
         elif isinstance(expr, Literal):
             return expr.value
         elif isinstance(expr, Grouping):

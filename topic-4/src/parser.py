@@ -28,6 +28,12 @@ class LetStmt(Stmt):
 
 
 @dataclass(frozen=True)
+class BlockStmt(Stmt):
+    stmts: List[Stmt]
+    span: Span
+
+
+@dataclass(frozen=True)
 class IfStmt(Stmt):
     condition: "Expr"
     then_block: List["Stmt"]
@@ -75,13 +81,6 @@ class Assign(Expr):
 class Binary(Expr):
     left: Expr
     op: Token
-    right: Expr
-    span: Span
-
-
-@dataclass(frozen=True)
-class Comparison(Expr):
-    left: Expr
     right: Expr
     span: Span
 
@@ -243,12 +242,25 @@ class Parser:
         token = self.peek()
         start = token.span.start
         match token.kind:
+            case TokenType.OpenCurly:
+                start = self.advance()
+                self.consume_terminators()
+                stmts: List[Stmt] = []
+                while not self.at(TokenType.CloseCurly):
+                    stmts.append(self.parse_stmt())
+                    self.consume_terminators()
+                curly = self.expect(TokenType.CloseCurly, "expected }")
+                self.consume_terminators()
+                return BlockStmt(stmts, Span(start.span.start, curly.span.end))
             case TokenType.Let:
                 self.advance()
                 assign = self.parse_expr()
                 if not isinstance(assign, Assign):
                     raise AssertionError(self.to_err(
                         assign, f"incorrect lhs node: {assign}"))
+                if not isinstance(assign.target, Variable):
+                    raise AssertionError(self.to_err(
+                        assign, "invalid lhs in assignment"))
                 self.expect(TokenType.Semi, "expected ;")
                 return LetStmt(assign=assign, span=Span(start, assign.span.end))
             case TokenType.If:
@@ -322,7 +334,8 @@ class Parser:
             return lines[ln - 1] if 1 <= ln <= len(lines) else ""
 
         parts: list[str] = []
-        header = f"At {sline}:{scol}" + (f"-{eline}:{ecol}" if (sline, scol) != (eline, ecol) else "")
+        header = f"At {sline}:{
+            scol}" + (f"-{eline}:{ecol}" if (sline, scol) != (eline, ecol) else "")
         parts.append(header)
 
         if sline == eline:
