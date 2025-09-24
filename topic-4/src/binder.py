@@ -101,7 +101,7 @@ class BoundUnary(BoundExpr):
 
 @dataclass(frozen=True)
 class BoundAssign(BoundExpr):
-    target: Symbol
+    target: BoundExpr
     value: BoundExpr
     span: Span
 
@@ -149,7 +149,7 @@ class Binder:
         self.var_count = 0
 
     def lookup_here(self, name: str):
-        for sym in self.scope.symbols:
+        for sym in reversed(self.scope.symbols):
             if sym.name == name:
                 return sym
         return None
@@ -157,7 +157,7 @@ class Binder:
     def lookup(self, name: str):
         scope = self.scope
         while scope is not None:
-            for sym in scope.symbols:
+            for sym in reversed(scope.symbols):
                 if name == sym.name:
                     return sym
             scope = scope.parent
@@ -225,14 +225,9 @@ class Binder:
         return BoundIfStmt(condition, then_block, else_block)
 
     def bind_let(self, stmt: LetStmt):
-        assert isinstance(stmt.assign, Assign)
-        found = self.lookup_here(stmt.assign.target.name.raw)
-        target = None
-        if found:
-            target = BoundVariable(found, stmt.assign.target.span)
-        else:
-            target = BoundVariable(self.declare(
-                stmt.assign.target.name.raw), stmt.assign.target.span)
+        assert isinstance(stmt.assign, Assign) and isinstance(stmt.assign.target, Variable)
+        target = BoundVariable(self.declare(
+            stmt.assign.target.name.raw), stmt.assign.target.span)
         value = self.bind_expression(stmt.assign.value)
         return BoundLetStmt(BoundAssign(target, value, stmt.assign.span), stmt.span)
 
@@ -245,8 +240,10 @@ class Binder:
 
     def bind_block(self, stmt: BlockStmt):
         stmts: List[BoundStmt] = []
+        self.open_scope()
         for s in  stmt.stmts:
             stmts.append(self.bind_stmt(s))
+        self.close_scope()
         return BoundBlockStmt(stmts, stmt.span)
 
     def bind_stmt(self, stmt: Stmt):
