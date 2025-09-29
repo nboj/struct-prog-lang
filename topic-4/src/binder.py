@@ -1,6 +1,6 @@
-from src.parser import Program, IfStmt, Expr, Stmt, LetStmt, Binary, Unary, Variable, CallExpr, Literal, Grouping, Assign, ExprStmt, BlockStmt
-from src.tokenizer import Token, TokenType, Span
-from src.source_map import SourceMap
+from ..src.parser import Program, IfStmt, Expr, Stmt, LetStmt, Binary, Unary, Variable, CallExpr, Literal, Grouping, Assign, ExprStmt, BlockStmt
+from ..src.tokenizer import Token, TokenType, Span
+from ..src.source_map import SourceMap
 from typing import List, Optional, Union, Protocol, Any
 from dataclasses import dataclass
 

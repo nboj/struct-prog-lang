@@ -1,7 +1,6 @@
-from src.source_map import SourceMap
-from src.parser import Program
+from ..src.source_map import SourceMap
+from ..src.parser import Program
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass(frozen=True)
@@ -11,7 +10,7 @@ class Instr:
 
 @dataclass(frozen=True)
 class Block:
-    instrs: List[Instr]
+    instrs: list[Instr]
 
 
 class Lowering:
