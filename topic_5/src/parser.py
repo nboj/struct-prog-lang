@@ -159,6 +159,8 @@ class Parser:
                 raise AssertionError(
                     self.sm.to_err(left, "invalid assignment target at {left.span}")
                 )
+            if isinstance(left, Variable) and left.name.raw == "_kentid_":
+                raise AssertionError(self.sm.to_err(left, "attempted explicit assignment of _kentid_"))
             return Assign(
                 target=left, value=value, span=Span(left.span.start, value.span.end)
             )
@@ -357,6 +359,12 @@ class Parser:
                 start = self.advance()
                 end = self.expect(TokenType.Semi, "expected ;")
                 return ContinueStmt(Span(start.span.start, end.span.end))
+            case TokenType.Cauman:
+                start = self.advance()
+                end = self.expect(TokenType.Semi, "expected ;")
+                target = Variable(Token(TokenType.Ident, "_kentid_", Span(start.span.start, start.span.end)), Span(start.span.start, start.span.end))
+                value = Literal("cauman@kent.edu", Span(start.span.start, start.span.end))
+                return LetStmt(Assign(target, value, Span(start.span.start, end.span.end)), Span(start.span.start, end.span.end))
             case _:
                 expr = self.parse_expr()
                 _ = self.expect(TokenType.Semi, "expected ;")

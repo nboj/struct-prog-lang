@@ -4,8 +4,9 @@ from src.lowering import Lowering
 from src.tokenizer import Tokenizer, Token
 from src.parser import Parser
 from src.debug_ast import render_ast
-from src.vm import VM
+from src.vm import VM, debug_stack
 from src.binder import Binder
+from src.utils import run_vm
 
 if __name__ == "__main__":
     args = sys.argv
@@ -34,9 +35,22 @@ if __name__ == "__main__":
             for idx, instr in enumerate(code.code):
                 print(f"| {idx}: ", instr)
             print()
+            print("=== PRE EVAL ===")
+            print(f"consts: {code.consts}")
+            print(f"globals: [nil] * {code.nglobals} (number of globals)")
+            print(f"stack: [nil] * 4096")
+            print("sp: 0 (stack pointer)")
+            print()
 
-            vm = VM(code)
-            vm.run()
+            out, vm = run_vm(code)
+
+            print("=== POST EVAL ===")
+            print(f"globals: {vm.globals}")
+            print(f"stack: {debug_stack(vm.stack)}")
+            print(f"sp={vm.sp}")
+            print()
+            print("=== OUT ===")
+            print(out)
 
         else:
             print("No text.")

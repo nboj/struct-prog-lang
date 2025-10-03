@@ -1,5 +1,5 @@
 from typing import Any
-from .utils import compile_trivial
+from ..src.utils import compile_trivial
 from ..src.parser import Node, Parser, Program, ExprStmt, CallExpr, Span, Variable, Binary, Literal
 from ..src.tokenizer import Tokenizer, Token, TokenType
 from ..src.debug_ast import render_ast

@@ -212,8 +212,7 @@ class Binder:
         elif isinstance(expr, Variable):
             symbol = self.lookup(expr.name.raw)
             if symbol is None:
-                raise AssertionError(
-                    f"Tried accessing undefined variable {expr}")
+                raise AssertionError(self.sm.to_err(expr, f"Tried accessing undefined variable {expr}"))
             return BoundVariable(symbol, expr.span)
         elif isinstance(expr, Literal):
             return BoundLiteral(expr.value, expr.span)
@@ -266,10 +265,6 @@ class Binder:
         return BoundLetStmt(BoundAssign(target, value, stmt.assign.span), stmt.span)
 
     def bind_expr_stmt(self, stmt: ExprStmt):
-        if isinstance(stmt.expr, Variable) and stmt.expr.name.raw == "cauman":
-            tmp =  self.bind_let(LetStmt(Assign(Variable(Token(TokenType.Ident, "_kentid_", Span(0, 0)), Span(0, 0)), Literal("cauman@kent.edu", Span(0, 0)), Span(0, 0)), stmt.span))
-            return tmp
-
         return BoundExprStmt(self.bind_expression(stmt.expr), stmt.span)
 
     def bind_block(self, stmt: BlockStmt, scope_kind: ScopeKind = ScopeKind.Other):

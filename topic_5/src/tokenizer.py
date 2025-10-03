@@ -41,6 +41,7 @@ class TokenType(Enum):
     BFalse = "BooleanFalse"
     Break = "Break"
     Continue = "Continue"
+    Cauman = "Cauman"
 
 
 class Token:
@@ -72,6 +73,7 @@ class Tokenizer:
         "while": TokenType.While,
         "break": TokenType.Break,
         "continue": TokenType.Continue,
+        "cauman": TokenType.Cauman,
     }
 
     def __init__(self, text: str):

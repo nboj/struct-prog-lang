@@ -1,5 +1,5 @@
 from ..src.types import Instr, Op
-from .utils import compile_trivial, parse_optional, pretty_ir, run_vm
+from ..src.utils import compile_trivial, parse_optional, pretty_ir, run_vm
 from pytest import approx
 
 

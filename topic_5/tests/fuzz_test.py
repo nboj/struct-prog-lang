@@ -5,7 +5,7 @@ from typing import Union
 
 from pytest import approx
 
-from .utils import compile_trivial, run_vm, parse_optional
+from ..src.utils import compile_trivial, run_vm, parse_optional
 
 Number = Union[int, float]
 

@@ -1,12 +1,12 @@
 from contextlib import contextmanager
 import io
 import sys
-from ..src.vm import VM
-from ..src.types import CodeObject, Instr
-from ..src.lowering import Lowering
-from ..src.binder import Binder
-from ..src.parser import Parser
-from ..src.tokenizer import Tokenizer
+from .vm import VM
+from .types import CodeObject, Instr
+from .lowering import Lowering
+from .binder import Binder
+from .parser import Parser
+from .tokenizer import Tokenizer
 
 
 def compile_trivial(text: str):

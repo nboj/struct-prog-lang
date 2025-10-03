@@ -25,6 +25,5 @@ if __name__ == "__main__":
 
             vm = VM(lowered)
             vm.run()
-
         else:
             print("No text.")
