@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import time
 from src.tokenizer import Tokenizer, Token
 from src.parser import Parser
 from src.vm import VM
@@ -24,6 +25,10 @@ if __name__ == "__main__":
             lowered = lowering.lower()
 
             vm = VM(lowered)
+
+            start = time.perf_counter_ns()
             vm.run()
+            end = time.perf_counter_ns()
+            print(f"=== {(end-start)/1e+9} ===")
         else:
             print("No text.")

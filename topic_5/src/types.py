@@ -31,23 +31,23 @@ class Span:
 
 
 class Op(IntEnum):
-    ADD = auto()
+    ADD = 0
     SUB = auto()
     DIV = auto()
     MUL = auto()
+    NEG = auto()
 
     EQ = auto()
     NEQ = auto()
     LT = auto()
     GT = auto()
-    OR = auto()
-    AND = auto()
 
     LOAD = auto()
     STORE = auto()
     POPN = auto()
     PUSH = auto()
     PUSHK = auto()
+    STOREG_K = auto()
     JZ = auto()
     JMP = auto()
     NOP = auto()
@@ -91,6 +91,8 @@ class Instr:
                     return "DIV"
                 case Op.SUB:
                     return "SUB"
+                case Op.NEG:
+                    return "NEG"
 
                 case Op.EQ:
                     return "EQ"
@@ -100,11 +102,9 @@ class Instr:
                     return "LT"
                 case Op.GT:
                     return "GT"
-                case Op.OR:
-                    return "OR"
-                case Op.AND:
-                    return "AND"
 
+                case Op.STOREG_K:
+                    return "STOREG_K"
                 case Op.POPN:
                     return "POPN"
                 case Op.PUSH:

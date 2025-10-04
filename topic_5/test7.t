@@ -1,7 +1,6 @@
-//let cauman = "bob the builder";
-if true {
-    cauman;
-    print(_kentid_);
-    // _kentid_ = "bob the builder";
+let a = 0;
+//while (a < 1000000) {
+while (a < 10) {
+    a = a + 1;
+    print(a);
 }
-//print(_kentid_);

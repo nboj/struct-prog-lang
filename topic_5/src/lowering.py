@@ -24,19 +24,24 @@ class Lowering:
         self.bytecode = []
         self.pseudo_bytecode = []
         self.consts = []
+
         self.const_index = {}
+        self.nil_idx = self.intern_const(NIL)
+        self.true_idx = self.intern_const(True)
+        self.false_idx = self.intern_const(False)
+
         self.label_counter = 0
         self.fn_stack = []
         self.modules = [ModuleLayout("main", 0)]
-        self.nil_idx = self.intern_const(NIL)
         self.loop_stack = []
 
     def intern_const(self, const: int | str | bool | float | Nil):
-        index = self.const_index.get(const)
+        key = (type(const), const) # NOTE: this is a python method to prevent collisions
+        index = self.const_index.get(key)
         if index is None:
             self.consts.append(const)
             index = len(self.consts) - 1
-            self.const_index[const] = index
+            self.const_index[key] = index
         return index
 
     def get_main_module(self):
@@ -49,11 +54,15 @@ class Lowering:
     def emit_pseudo_nil(self):
         self.emit_pseudo(Op.PUSHK, self.nil_idx)
 
-    def lower_expression(self, expr: BoundExpr):
+    def lower_expression(self, expr: BoundExpr, want_value=True):
         if isinstance(expr, BoundLiteral):
             index = self.intern_const(expr.value)
+            if not want_value:
+                return
             self.emit_pseudo(Op.PUSHK, index)
         elif isinstance(expr, BoundVariable):
+            if not want_value:
+                return
             sym = expr.sym
             if sym.sym_type == SymbolType.Global:
                 slot = self.get_main_module().get_global(sym)
@@ -70,10 +79,14 @@ class Lowering:
                 if target_sym.sym_type == SymbolType.Global:
                     target_slot = self.get_main_module().get_global(target_sym)
                     self.emit_pseudo(Op.STOREG, target_slot)
+                    if not want_value:
+                        return
                     self.emit_pseudo_nil()
                 elif target_sym.sym_type == SymbolType.Local:
                     target_slot = self.get_current_fn_layout().get_slot(target_sym)
                     self.emit_pseudo(Op.STORE, target_slot)
+                    if not want_value:
+                        return
                     self.emit_pseudo_nil()
                 else:
                     raise AssertionError(f"unhandled SymbolType in lowering.py: {target_sym.sym_type}")
@@ -90,6 +103,8 @@ class Lowering:
                     for arg in expr.args:
                         self.lower_expression(arg)
                     self.emit_pseudo(Op.CALL_BUILTIN, sym.symbol_id, len(expr.args))
+                    if not want_value:
+                        self.emit_pseudo(Op.POPN, 1)
                 else:
                     raise AssertionError("custom functions not implemented in lowering.py")
             else:
@@ -97,38 +112,111 @@ class Lowering:
         elif isinstance(expr, BoundBinary):
             left = expr.left
             right = expr.right
-            self.lower_expression(left)
-            self.lower_expression(right)
+            if not want_value:
+                if expr.op.kind in (TokenType.DoubleAmp, TokenType.DoublePipe):
+                    self.lower_expression(expr)
+                    self.emit_pseudo(Op.POPN, 1)
+                    return
+                else:
+                    self.lower_expression(left, want_value=False)
+                    self.lower_expression(right, want_value=False)
+                    return
             match expr.op.kind:
                 case TokenType.Plus:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.ADD)
                 case TokenType.Minus:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.SUB)
                 case TokenType.Divide:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.DIV)
                 case TokenType.Star:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.MUL)
                 case TokenType.DbEq:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.EQ)
                 case TokenType.NEq:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.NEQ)
                 case TokenType.Lt:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.LT)
                 case TokenType.Gt:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
                     self.emit_pseudo(Op.GT)
                 case TokenType.DoublePipe:
-                    self.emit_pseudo(Op.OR)
+                    endL = self.new_label()
+                    rhsL = self.new_label()
+                    falseL = self.new_label()
+                    self.lower_expression(left)
+                    self.emit_pseudo(PseudoOp.JZ_LABEL, rhsL)
+                    self.emit_pseudo(Op.PUSHK, self.true_idx)
+                    self.emit_pseudo(PseudoOp.JMP_LABEL, endL)
+                    self.emit_pseudo(PseudoOp.LABEL, rhsL)
+
+                    self.lower_expression(right)
+                    self.emit_pseudo(PseudoOp.JZ_LABEL, falseL)
+                    self.emit_pseudo(Op.PUSHK, self.true_idx)
+                    self.emit_pseudo(PseudoOp.JMP_LABEL, endL)
+                    self.emit_pseudo(PseudoOp.LABEL, falseL)
+                    self.emit_pseudo(Op.PUSHK, self.false_idx)
+
+                    self.emit_pseudo(PseudoOp.LABEL, endL)
+                    #self.emit_pseudo(Op.OR)
                 case TokenType.DoubleAmp:
-                    self.emit_pseudo(Op.AND)
+                    endL = self.new_label()
+                    falseL = self.new_label()
+                    self.lower_expression(left)
+                    self.emit_pseudo(PseudoOp.JZ_LABEL, falseL)
+                    self.lower_expression(right)
+                    self.emit_pseudo(PseudoOp.JZ_LABEL, falseL)
+                    self.emit_pseudo(Op.PUSHK, self.true_idx)
+                    self.emit_pseudo(PseudoOp.JMP_LABEL, endL)
+                    self.emit_pseudo(PseudoOp.LABEL, falseL)
+                    self.emit_pseudo(Op.PUSHK, self.false_idx)
+                    self.emit_pseudo(PseudoOp.LABEL, endL)
+                    #self.emit_pseudo(Op.AND)
                 case _:
                     raise AssertionError(f"unhandled op kind in lowering.py: {expr.op.kind}")
         elif isinstance(expr, BoundUnary):
+            if not want_value:
+                self.lower_expression(expr.expr, False)
+                return
             match expr.op.kind:
                 case TokenType.Minus:
-                    zero = self.intern_const(0)
-                    self.emit_pseudo(Op.PUSHK, zero)
+                    if isinstance(expr.expr, BoundLiteral):
+                        if isinstance(expr.expr.value, bool):
+                            raise AssertionError(self.sm.to_err(expr.expr, "unary - not supported for bool"))
+                        if not isinstance(expr.expr.value, (int, float)):
+                            raise AssertionError(self.sm.to_err(expr.expr, f"unary - not supported for {type(expr.expr.value).__name__}"))
+                        index = self.intern_const(-expr.expr.value)
+                        self.emit_pseudo(Op.PUSHK, index)
+                        return
                     self.lower_expression(expr.expr)
-                    self.emit_pseudo(Op.SUB)
+                    self.emit_pseudo(Op.NEG)
+                case TokenType.Bang:
+                    endL = self.new_label()
+                    falseL = self.new_label()
+                    self.lower_expression(expr.expr)
+                    self.emit_pseudo(PseudoOp.JZ_LABEL, falseL)
+                    self.emit_pseudo(Op.PUSHK, self.false_idx)
+                    self.emit_pseudo(PseudoOp.JMP_LABEL, endL)
+
+                    self.emit_pseudo(PseudoOp.LABEL, falseL)
+                    self.emit_pseudo(Op.PUSHK, self.true_idx)
+
+                    self.emit_pseudo(PseudoOp.LABEL, endL)
+                    #self.emit_pseudo(Op.NOT)
                 case _:
                     raise AssertionError(self.sm.to_err(expr, f"unhandled expr type in lower_expression in lowering.py: {expr}"))
         else:
@@ -170,8 +258,8 @@ class Lowering:
             self.lower_block(stmt.else_block)
             self.emit_pseudo(PseudoOp.LABEL, endL)
         elif isinstance(stmt, BoundExprStmt):
-            self.lower_expression(stmt.expr)
-            self.emit_pseudo(Op.POPN, 1)
+            self.lower_expression(stmt.expr, False)
+            #self.emit_pseudo(Op.POPN, 1)
         elif isinstance(stmt, BoundLetStmt):
             assert isinstance(stmt.assign.target, BoundVariable)
             self.lower_expression(stmt.assign.value)

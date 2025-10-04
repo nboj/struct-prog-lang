@@ -12,10 +12,6 @@ def test_expressions():
     code = codeobj.code
     pretty_ir(code)
     assert code == [
-        Instr(Op.PUSHK, 1),
-        Instr(Op.PUSHK, 1),
-        Instr(Op.ADD),
-        Instr(Op.POPN, 1),
         Instr(Op.HALT),
     ]
 
@@ -29,10 +25,10 @@ print(3*1+1);
     code = codeobj.code
     pretty_ir(code)
     truth = [
-        Instr(Op.PUSHK, 1),
-        Instr(Op.PUSHK, 2),
+        Instr(Op.PUSHK, 3),
+        Instr(Op.PUSHK, 4),
         Instr(Op.MUL),
-        Instr(Op.PUSHK, 2),
+        Instr(Op.PUSHK, 4),
         Instr(Op.ADD),
         Instr(Op.CALL_BUILTIN, 0, 1),
         Instr(Op.POPN, 1),
@@ -40,6 +36,7 @@ print(3*1+1);
     ]
     print()
     pretty_ir(truth)
+    pretty_ir(code)
     out, vm = run_vm(codeobj)
     lines = out.splitlines()
     assert code == truth
@@ -98,7 +95,7 @@ print(a + b > c || d + e < f && g == h);
 print(((a + b) * (c - d)) / ((e + f) * (g - h)));
 print((((a + b) * (c - d)) / (e + f)) > ((g * h) - (i / j)));
 print(((a*b) + (c/d) - (e*f)) == ((g/h) + (i*j) - (k/l)));
-print((((a+b)+(c+d))*((e+f)-(g+h))) < ((i*j)/(k+l)));
+print((!((!(a+b)+(c+d))*((e+f)-(g+h)))) < ((i*j)/(k+l)));
 """
 
     # Deep nesting (stress parser/stack)
@@ -283,7 +280,7 @@ let kk = 1187;
         ((a + b) * (c - d)) / ((e + f) * (g - h)),
         (((a + b) * (c - d)) / (e + f)) > ((g * h) - (i / j)),
         ((a*b) + (c/d) - (e*f)) == ((g/h) + (i*j) - (k/l)),
-        (((a+b)+(c+d))*((e+f)-(g+h))) < ((i*j)/(k+l)),
+        (not((not(a+b)+(c+d))*((e+f)-(g+h)))) < ((i*j)/(k+l)),
     ]
     for line, expect in zip(lines, expected):
         assert parse_optional(line) == approx(expect)

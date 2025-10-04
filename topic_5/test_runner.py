@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import time
 from src.lowering import Lowering
 from src.tokenizer import Tokenizer, Token
 from src.parser import Parser
@@ -34,23 +35,29 @@ if __name__ == "__main__":
             print()
             for idx, instr in enumerate(code.code):
                 print(f"| {idx}: ", instr)
+
+            pre_consts = code.consts
+            pre_nglobals = code.nglobals
+
+            vm = VM(code)
+            print("=== OUT ===")
+            start = time.perf_counter_ns()
+            vm.run()
+            end = time.perf_counter_ns()
+            print(f"=== {(end-start)/1e+9} ===")
+
             print()
             print("=== PRE EVAL ===")
-            print(f"consts: {code.consts}")
-            print(f"globals: [nil] * {code.nglobals} (number of globals)")
+            print(f"consts: {pre_consts}")
+            print(f"globals: [nil] * {pre_nglobals} (number of globals)")
             print(f"stack: [nil] * 4096")
             print("sp: 0 (stack pointer)")
             print()
-
-            out, vm = run_vm(code)
-
             print("=== POST EVAL ===")
             print(f"globals: {vm.globals}")
             print(f"stack: {debug_stack(vm.stack)}")
             print(f"sp={vm.sp}")
             print()
-            print("=== OUT ===")
-            print(out)
 
         else:
             print("No text.")
