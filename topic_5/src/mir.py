@@ -117,6 +117,11 @@ class Assign(MStmt):
     rval: RValue | Operand
 
 
+@dataclass(frozen=True)
+class Phi(RValue):
+    incoming: list[tuple[int, Operand]] # (pred_block_id, value)
+
+
 class Block:
     id: int
     stmts: list[MStmt]
@@ -216,24 +221,22 @@ class CFGBuilder:
                 )
     def lower_logical(self, expr: BoundBinary) -> Temp:
         match expr.op.kind:
-            # FIXME: Add phi node instead of overwriting the tmp
             case TokenType.DoubleAmp:
-                exit_block = self.new_block()
+                join_block = self.new_block()
                 true_block = self.new_block()
                 false_block = self.new_block()
                 lhs = self.lower_to_operand(expr.left)
                 self.current_block().term = Branch(lhs, true_block.id, false_block.id)
                 self.blocks.append(true_block)
-                tmp1 = self.new_temp()
-                self.emit(Assign(tmp1, self.lower_expression(expr.right)))
-                self.current_block().term = Goto(exit_block.id)
+                rhs = self.lower_to_operand(expr.right)
+                self.current_block().term = Goto(join_block.id)
                 self.blocks.append(false_block)
-                tmp2 = self.new_temp()
-                self.emit(Assign(tmp2, Const(False)))
-                self.current_block().term = Goto(exit_block.id)
-                self.blocks.append(exit_block)
-                assert(False), "Fix this"
-                return tmp1
+                self.current_block().term = Goto(join_block.id)
+                self.blocks.append(join_block)
+                tmp = self.new_temp()
+                phi = Phi([(true_block.id, rhs), (false_block.id, Const(False))])
+                self.emit(Assign(tmp, phi))
+                return tmp
             case TokenType.DoublePipe:
                 assert False
             case _ :
