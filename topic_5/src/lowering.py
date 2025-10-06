@@ -295,7 +295,7 @@ class Lowering:
             )
 
     def lower(self):
-        for stmt in self.program.body:
+        for stmt in self.program.body[0].body.stmts:
             self.lower_stmt(stmt)
 
         map: dict[int, int] = {} # NOTE: id, location

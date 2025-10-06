@@ -7,6 +7,8 @@ class SymbolType(Enum):
     Local = auto()
     Global = auto()
     Builtin = auto()
+    Function = auto()
+    Param = auto()
 
 
 class Symbol:

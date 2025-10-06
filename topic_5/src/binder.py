@@ -40,7 +40,7 @@ class BoundNode(Protocol):
 
 @dataclass(frozen=True)
 class BoundProgram(BoundNode):
-    body: list["BoundStmt"]
+    body: list["BoundFunction"]
     span: Span
 
 
@@ -139,6 +139,13 @@ class BoundCallExpr(BoundExpr):
     args: list[BoundExpr]
     span: Span
 
+@dataclass(frozen=True)
+class BoundFunction(BoundNode):
+    sym: Symbol
+    args: list[Symbol]
+    body: BoundBlockStmt
+    span: Span
+
 
 class Binder:
     program: Program
@@ -170,9 +177,11 @@ class Binder:
             scope = scope.parent
         return None
 
-    def declare(self, name: str):
+    def declare(self, name: str, type: SymbolType | None = None):
         sym = None
-        if self.in_function():
+        if type:
+            sym = Symbol(self.var_count, name, type)
+        elif self.in_function():
             sym = Symbol(self.var_count, name, SymbolType.Local)
         else:
             sym = Symbol(self.var_count, name, SymbolType.Global)
@@ -304,4 +313,15 @@ class Binder:
         stmts: list[BoundStmt] = []
         for node in self.program.body:
             stmts.append(self.bind_stmt(node))
-        return BoundProgram(stmts, self.program.span)
+        fns: list[BoundFunction] = []
+        module_init_stmts: list[BoundStmt] = []
+        for stmt in stmts:
+            if isinstance(stmt, BoundFunction):
+                fns.append(stmt)
+            else:
+                module_init_stmts.append(stmt)
+        start = module_init_stmts[0].span.start if len(module_init_stmts)>0 else 0
+        end = module_init_stmts[len(module_init_stmts)-1].span.end if len(module_init_stmts)>0 else 0
+        fns.append(BoundFunction(self.declare("module_init", SymbolType.Function), [], BoundBlockStmt(module_init_stmts, Span(start, end)), Span(start, end)))
+
+        return BoundProgram(fns, self.program.span)
