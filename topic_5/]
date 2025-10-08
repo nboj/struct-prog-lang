@@ -97,6 +97,7 @@ class VM:
 
     def op_load(self, a: int, _b: int, _c: int):
         item = self.stack[self.fp+3+a]
+        self.push_stack(item)
         self.stack[self.sp] = item
         self.sp += 1
         self.ip += 1
@@ -107,176 +108,182 @@ class VM:
         self.ip += 1
 
     def op_ret(self, a: int, _b: int, _c: int):
-        self.sp -= 1
-        retv = self.stack[self.sp]
+        retv = self.pop_stack()
         old_fp = self.fp
         self.sp = self.stack[self.fp+1]
         self.fp = self.stack[self.fp]
-        self.sp -= 1
-        ret_addr = self.stack[self.sp]
+        ret_addr = self.pop_stack()
         for _arg in range(self.stack[old_fp+2]):
-            self.sp -= 1
+            self.sp-=1
         self.stack[self.sp] = retv
         self.sp += 1
         self.ip = ret_addr
 
     def op_load_arg(self, a: int, _b: int, _c: int):
         item = self.stack[self.fp-2-a]
-        self.stack[self.sp] = item
-        self.sp += 1
-        self.ip += 1
+        self.push_stack(item)
+        self.bump()
 
     def op_call(self, addr: int, nlocals: int, c: int):
         self.push_stack(self.ip + 1)
         old_fp = self.fp
         old_sp = self.sp
         self.fp = self.sp
-        self.stack[self.sp] = old_fp
-        self.sp += 1
-        self.stack[self.sp] = old_sp
-        self.sp += 1
-        self.stack[self.sp] = c
-        self.sp += 1
+        self.push_stack(old_fp)
+        self.push_stack(old_sp)
+        self.push_stack(c)
         self.sp += nlocals
-        self.ip = addr
+        self.goto(addr)
 
     def op_storeg_k(self, a: int, b: int, _c: int):
         self.globals[a] = b
-        self.ip += 1
+        self.bump()
 
     def op_call_builtin(self, a: int, b: int, _c: int):
         self.sp -= b
         if self.builtins[a] is None:
             raise AssertionError(f"unhandled builtin in VM {a}")
-        self.stack[self.sp] = self.builtins[a](*self.stack[self.sp:self.sp+b])
-        self.sp += 1
-        self.ip += 1
+        self.push_stack(self.builtins[a](*self.stack[self.sp:self.sp+b]))
+        self.bump()
 
     def op_pushk(self, a: int, _b: int, _c: int):
-        self.stack[self.sp] = self.codeobject.consts[a] 
-        self.sp += 1
-        self.ip += 1
+        self.push_stack(self.codeobject.consts[a])
+        self.bump()
 
     def op_halt(self, _a: int, _b: int, _c: int):
         self.running = False
 
     def op_add(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left + right
-        self.ip += 1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left + right)
+        self.bump()
 
     def op_mul(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left * right
-        self.ip += 1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left * right)
+        self.bump()
 
     def op_div(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left / right
-        self.ip += 1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left / right)
+        self.bump()
 
     def op_sub(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left - right
-        self.ip += 1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left - right)
+        self.bump()
 
     def op_mod(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left % right
-        self.ip += 1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left % right)
+        self.bump()
 
     def op_jmp(self, a: int, _b: int, _c: int):
-        self.ip = a
+        self.goto(a)
 
     def op_storeg(self, a: int, _b: int, _c: int):
-        self.sp -= 1
-        item = self.stack[self.sp]
-        self.globals[a] = item
-        self.ip += 1
+        item = self.pop_stack()
+        self.write_global(a, item)
+        self.bump()
 
     def op_loadg(self, a: int, _b: int, _c: int):
         item = self.globals[a]
-        self.stack[self.sp] = item
-        self.sp += 1
-        self.ip += 1
+        self.push_stack(item)
+        self.bump()
 
     def op_nop(self, _a: int, _b: int, _c: int):
-        self.ip += 1
+        self.bump()
 
     def op_popn(self, a: int, _b: int, _c: int):
         self.sp -= a
-        self.ip += 1
+        self.bump()
 
     # NOTE: boolean logic
     def op_jz(self, a: int, _b: int, _c: int):
-        self.sp -= 1
-        cond = self.stack[self.sp]
+        cond = self.pop_stack()
         # if not self.is_truthy(cond):
         if not cond:
-            self.ip = a
+            self.goto(a)
         else:
-            self.ip += 1
+            self.bump()
 
     def op_neg(self, _a: int, _b: int, _c: int):
-        val = self.stack[self.sp-1]
-        self.stack[self.sp-1] = -val
-        self.ip += 1
+        val = self.pop_stack()
+        self.push_stack(-val)
+        self.bump()
 
     def op_eq(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left==right
-        self.ip+=1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left == right)
+        self.bump()
 
     def op_neq(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left!=right
-        self.ip+=1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left != right)
+        self.bump()
 
     def op_lt(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left<right
-        self.ip+=1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left < right)
+        self.bump()
 
     def op_gt(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left>right
-        self.ip+=1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left > right)
+        self.bump()
 
     def op_gteq(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left>=right
-        self.ip+=1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left >= right)
+        self.bump()
 
     def op_lteq(self, _a: int, _b: int, _c: int):
-        self.sp -= 1
-        right = self.stack[self.sp]
-        left = self.stack[self.sp-1]
-        self.stack[self.sp-1] = left<=right
-        self.ip+=1
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left <= right)
+        self.bump()
 
     def undefined(self, _a: int, _b: int):
         instr = self.codeobject.code[self.ip]
         raise AssertionError(f"unhandled Op code in VM {instr.op_str(instr.op)}")
+
+    def bump(self, amount: int = 1):
+        self.ip += amount
+
+    def goto(self, new_ip: int):
+        self.ip = new_ip
+
+    def pop_stack(self):
+        self.sp -= 1
+        return self.stack[self.sp]
+
+    def push_stack(self, item: Any):
+        self.stack[self.sp] = item
+        self.sp += 1
+
+    def write_global(self, index: int, item: Any):
+        self.globals[index] = item
+
+    def is_truthy(self, v: Any):
+        if v is NIL:
+            return False
+        elif isinstance(v, bool):
+            return v
+        elif isinstance(v, int | float):
+            return v != 0
+        elif isinstance(v, str) and len(v) == 0:
+            return len(v) > 0
+        return True
 
     def run(self):
         if len(self.codeobject.code) <= 0:
