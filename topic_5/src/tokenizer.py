@@ -9,6 +9,7 @@ class TokenType(Enum):
     Plus = "Plus"
     Minus = "Minus"
     Star = "Star"
+    Mod = "Mod"
     Amp = "Amp"
     DoubleAmp = "DoubleAmp"
     DoublePipe = "DoublePipe"
@@ -30,6 +31,10 @@ class TokenType(Enum):
     String = "String"
     Gt = "GreaterThan"
     Lt = "LessThan"
+    LtEq = "LessThanEquals"
+    GtEq = "LessThanEquals"
+    PlusEq = "PlusEquals"
+    DoubleDot = "DoubleDot"
 
     # KeyWords
     Let = "Let"
@@ -42,6 +47,10 @@ class TokenType(Enum):
     Break = "Break"
     Continue = "Continue"
     Cauman = "Cauman"
+    Fn = "Fn"
+    Return = "Return"
+    Nil = "Nil"
+    For = "For"
 
 
 class Token:
@@ -74,6 +83,9 @@ class Tokenizer:
         "break": TokenType.Break,
         "continue": TokenType.Continue,
         "cauman": TokenType.Cauman,
+        "fn": TokenType.Fn,
+        "return": TokenType.Return,
+        "for": TokenType.For,
     }
 
     def __init__(self, text: str):
@@ -105,6 +117,12 @@ class Tokenizer:
         if self.index + 1 >= len(self.text):
             return "\0"
         return self.text[self.index + 1]
+
+    def peek_n(self, n:int) -> str:
+        assert self.index < len(self.text) - 1, "tried peeking after last token"
+        if self.index + n >= len(self.text):
+            return "\0"
+        return self.text[self.index + n]
 
     def add(self, kind: TokenType, raw: str, span: Span):
         self.tokens.append(Token(kind, raw, span))
@@ -146,7 +164,12 @@ class Tokenizer:
                 continue
 
             if ch == ".":  # '.0)'
-                if self.is_num(self.peek_next()):
+                if self.peek_next() == ".":
+                    start = self.index
+                    _ = self.bump()
+                    _ = self.bump()
+                    self.add(TokenType.DoubleDot, "..", Span(start, self.index))
+                elif self.is_num(self.peek_next()):
                     start_on = self.index
                     out = "0" + self.bump()
                     ch = self.bump()
@@ -162,8 +185,14 @@ class Tokenizer:
                 continue
 
             if ch == "+":
-                self.add_single(TokenType.Plus, ch)
-                _ = self.bump()
+                if self.peek_next() == "=":
+                    start = self.index
+                    _ = self.bump()
+                    _ = self.bump()
+                    self.add(TokenType.PlusEq, "+=", Span(start, self.index))
+                else:
+                    self.add_single(TokenType.Plus, ch)
+                    _ = self.bump()
                 continue
 
             if ch == ",":
@@ -192,13 +221,25 @@ class Tokenizer:
                 continue
 
             if ch == ">":
-                self.add_single(TokenType.Gt, ch)
-                _ = self.bump()
+                if self.peek_next() == "=":
+                    start = self.index
+                    self.bump()
+                    self.bump()
+                    self.add(TokenType.GtEq, ">=", Span(start, self.index))
+                else:
+                    self.add_single(TokenType.Gt, ch)
+                    _ = self.bump()
                 continue
 
             if ch == "<":
-                self.add_single(TokenType.Lt, ch)
-                _ = self.bump()
+                if self.peek_next() == "=":
+                    start = self.index
+                    self.bump()
+                    self.bump()
+                    self.add(TokenType.LtEq, "<=", Span(start, self.index))
+                else:
+                    self.add_single(TokenType.Lt, ch)
+                    _ = self.bump()
                 continue
 
             if ch == ";":
@@ -228,6 +269,12 @@ class Tokenizer:
                             f"Unknown character next to pipe: {self.peek_next()}",
                         )
                     )
+
+            if ch == "%":
+                start = self.index
+                self.add_single(TokenType.Mod, "%")
+                _ = self.bump()
+                continue
 
             if ch == "&":
                 start_index = self.index
@@ -298,8 +345,20 @@ class Tokenizer:
                 num = ""
                 peeked = ch
                 start_index = self.index
+                if self.peek_next() == "." and self.peek_n(2) == ".":
+                    _ = self.bump()
+                    self.add(TokenType.Number, ch, Span(start_index, self.index))
+                    start = self.index
+                    _ = self.bump()
+                    _ = self.bump()
+                    self.add(TokenType.DoubleDot, "..", Span(start, self.index))
+                    continue
                 found_dot = False
-                while self.is_num(peeked) or (peeked == "." and not found_dot):
+                while self.is_num(peeked) or (peeked == "." and not found_dot) or (peeked == "_" and self.peek_n(2) != "_"):
+                    if peeked == "_":
+                        _ = self.bump()
+                        peeked = self.peek()
+                        continue
                     if peeked == ".":
                         found_dot = True
                     num += self.bump()

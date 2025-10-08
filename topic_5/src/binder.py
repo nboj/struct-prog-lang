@@ -1,7 +1,7 @@
 from enum import Enum
-from .parser import BreakStmt, ContinueStmt, Program, IfStmt, Expr, Stmt, LetStmt, Binary, Unary, Variable, CallExpr, Literal, Grouping, Assign, ExprStmt, BlockStmt, WhileStmt
+from .parser import AugAssign, BreakStmt, ContinueStmt, FunctionStmt, Program, IfStmt, Expr, ReturnStmt, Stmt, LetStmt, Binary, Unary, Variable, CallExpr, Literal, Grouping, Assign, ExprStmt, BlockStmt, WhileStmt
 from .tokenizer import Token, TokenType
-from .types import Span, Symbol, SymbolType
+from .types import Nil, Span, Symbol, SymbolType
 from .source_map import SourceMap
 from typing import Protocol
 from dataclasses import dataclass
@@ -17,12 +17,14 @@ class Scope:
     children: list["Scope"]
     symbols: list[Symbol]
     kind: ScopeKind
+    nlocals: int
 
     def __init__(self, parent: "Scope | None" = None, kind: ScopeKind = ScopeKind.Other):
         self.parent = parent
         self.children = []
         self.symbols = []
         self.kind = kind
+        self.nlocals = 0
 
     def to_str(self, depth:int=0) -> str:
         scope = self
@@ -88,6 +90,12 @@ class BoundWhileStmt(BoundStmt):
     block: BoundBlockStmt
     span: Span
 
+@dataclass(frozen=True)
+class BoundReturnStmt(BoundStmt):
+    expr: "None | BoundExpr"
+    span: Span
+
+
 class BoundExpr(BoundNode):
     span: Span
 
@@ -101,7 +109,7 @@ class BoundPropertyAccess(BoundExpr):
 
 @dataclass(frozen=True)
 class BoundLiteral(BoundExpr):
-    value: str | int | bool | float
+    value: str | int | bool | float | Nil
     span: Span
 
 
@@ -117,6 +125,14 @@ class BoundAssign(BoundExpr):
     target: BoundExpr
     value: BoundExpr
     span: Span
+
+@dataclass(frozen=True)
+class BoundAugAssign(BoundExpr):
+    target: BoundExpr
+    op: Token
+    value: BoundExpr
+    span: Span
+
 
 
 @dataclass(frozen=True)
@@ -140,10 +156,11 @@ class BoundCallExpr(BoundExpr):
     span: Span
 
 @dataclass(frozen=True)
-class BoundFunction(BoundNode):
+class BoundFunction(BoundStmt):
     sym: Symbol
     args: list[Symbol]
     body: BoundBlockStmt
+    nlocals: int
     span: Span
 
 
@@ -181,13 +198,25 @@ class Binder:
         sym = None
         if type:
             sym = Symbol(self.var_count, name, type)
-        elif self.in_function():
+        elif self.in_function() and self.lookup(name) is None:
             sym = Symbol(self.var_count, name, SymbolType.Local)
+            if name != "module_init":
+                fn = self.get_current_function()
+                assert fn is not None, "couldnt find current function in binder"
+                fn.nlocals += 1
         else:
             sym = Symbol(self.var_count, name, SymbolType.Global)
         self.var_count += 1
         self.scope.symbols.append(sym)
         return sym
+
+    def get_current_function(self):
+        scope = self.scope
+        while scope is not None:
+            if scope.kind == ScopeKind.Function:
+                return scope
+            scope = scope.parent
+        return None
 
     def in_function(self):
         scope = self.scope
@@ -233,9 +262,10 @@ class Binder:
             for arg in expr.args:
                 args.append(self.bind_expression(arg))
             return BoundCallExpr(callee, args, expr.span)
-
+        elif isinstance(expr, AugAssign):
+            return BoundAugAssign(self.bind_expression(expr.target), op=expr.op, value=self.bind_expression(expr.value), span=expr.span)
         else:
-            raise AssertionError(f"Expr not handled in VM {expr}")
+            raise AssertionError(f"Expr not handled in binder {expr}")
 
     def open_scope(self, scope_kind: ScopeKind = ScopeKind.Other):
         new_scope = Scope(self.scope, scope_kind)
@@ -276,13 +306,28 @@ class Binder:
     def bind_expr_stmt(self, stmt: ExprStmt):
         return BoundExprStmt(self.bind_expression(stmt.expr), stmt.span)
 
-    def bind_block(self, stmt: BlockStmt, scope_kind: ScopeKind = ScopeKind.Other):
+    def bind_block(self, stmt: BlockStmt, scope_kind: ScopeKind = ScopeKind.Other, make_scope: bool = True):
         stmts: list[BoundStmt] = []
-        self.open_scope(scope_kind)
+        if make_scope:
+            self.open_scope(scope_kind)
         for s in  stmt.stmts:
             stmts.append(self.bind_stmt(s))
-        self.close_scope()
+        if make_scope:
+            self.close_scope()
         return BoundBlockStmt(stmts, stmt.span)
+
+    def bind_function(self, stmt: FunctionStmt) -> BoundFunction:
+        fn_sym = self.declare(stmt.name.raw, SymbolType.Function)
+        self.open_scope(ScopeKind.Function)
+        args: list[Symbol] = []
+        for arg in stmt.args:
+            assert isinstance(arg, Variable)
+            arg_sym = self.declare(arg.name.raw, SymbolType.Arg)
+            args.append(arg_sym)
+        body = self.bind_block(stmt.block, make_scope=False)
+        nlocals = self.scope.nlocals
+        self.close_scope()
+        return BoundFunction(fn_sym, args, body, nlocals, stmt.span)
 
     def bind_stmt(self, stmt: Stmt):
         if isinstance(stmt, IfStmt):
@@ -306,6 +351,13 @@ class Binder:
                 return BoundContinueStmt(stmt.span)
             else:
                 raise AssertionError(self.sm.to_err(stmt, "tried continuing outside a loop context"))
+        elif isinstance(stmt, FunctionStmt):
+            return self.bind_function(stmt)
+        elif isinstance(stmt, ReturnStmt):
+            bound_expr = None
+            if stmt.expr:
+                bound_expr = self.bind_expression(stmt.expr)
+            return BoundReturnStmt(bound_expr, stmt.span)
         else:
             raise AssertionError(f"Unhandled stmt in binder: {stmt}")
 
@@ -322,6 +374,6 @@ class Binder:
                 module_init_stmts.append(stmt)
         start = module_init_stmts[0].span.start if len(module_init_stmts)>0 else 0
         end = module_init_stmts[len(module_init_stmts)-1].span.end if len(module_init_stmts)>0 else 0
-        fns.append(BoundFunction(self.declare("module_init", SymbolType.Function), [], BoundBlockStmt(module_init_stmts, Span(start, end)), Span(start, end)))
+        fns.append(BoundFunction(self.declare("module_init", SymbolType.Function), args=[], body=BoundBlockStmt(module_init_stmts, Span(start, end)), span=Span(start, end), nlocals=0))
 
         return BoundProgram(fns, self.program.span)

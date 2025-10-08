@@ -1,7 +1,7 @@
 from .tokenizer import Token, TokenType
 from dataclasses import dataclass
 from typing import Protocol
-from .types import Span
+from .types import NIL, Nil, Span
 from .source_map import SourceMap
 
 
@@ -52,10 +52,21 @@ class WhileStmt(Stmt):
     block: BlockStmt
     span: Span
 
+@dataclass(frozen=True)
+class FunctionStmt(Stmt):
+    name: Token
+    args: list["Variable"]
+    block: BlockStmt
+    span: Span
 
 @dataclass(frozen=True)
 class ExprStmt(Stmt):
     expr: "Expr"
+    span: Span
+
+@dataclass(frozen=True)
+class ReturnStmt(Stmt):
+    expr: "None | Expr"
     span: Span
 
 
@@ -72,7 +83,7 @@ class PropertyAccess(Expr):
 
 @dataclass(frozen=True)
 class Literal(Expr):
-    value: int | str | bool | float
+    value: int | str | bool | float | Nil
     span: Span
 
 
@@ -89,6 +100,12 @@ class Assign(Expr):
     value: Expr
     span: Span
 
+@dataclass(frozen=True)
+class AugAssign(Expr):
+    target: Expr
+    op: Token
+    value: Expr
+    span: Span
 
 @dataclass(frozen=True)
 class Binary(Expr):
@@ -164,6 +181,15 @@ class Parser:
             return Assign(
                 target=left, value=value, span=Span(left.span.start, value.span.end)
             )
+        elif self.at(TokenType.PlusEq):
+            op = self.advance()
+            value = self.parse_expr()
+            if not isinstance(left, (Variable, PropertyAccess)):
+                raise AssertionError(
+                    self.sm.to_err(left, "invalid assignment target at {left.span}")
+                )
+            return AugAssign(left, op, value, Span(left.span.start, value.span.end))
+
         return left
 
     def parse_binary(self, min_prec: int) -> Expr:
@@ -190,8 +216,11 @@ class Parser:
         TokenType.DbEq: 2,
         TokenType.Lt: 3,
         TokenType.Gt: 3,
+        TokenType.LtEq: 3,
+        TokenType.GtEq: 3,
         TokenType.Plus: 4,
         TokenType.Minus: 4,
+        TokenType.Mod: 5,
         TokenType.Star: 5,
         TokenType.Divide: 5,
     }
@@ -216,16 +245,9 @@ class Parser:
         primary = self.parse_primary()
         while True:
             if self.at(TokenType.OpenParen):
-                _l = self.advance()
-                args: list[Expr] = []
-                if not self.at(TokenType.CloseParen):
-                    args.append(self.parse_expr())
-                    while self.at(TokenType.Comma):
-                        _ = self.advance()
-                        args.append(self.parse_expr())
-                r = self.expect(TokenType.CloseParen, "expected )")
+                args = self.parse_args()
                 primary = CallExpr(
-                    callee=primary, args=args, span=Span(primary.span.start, r.span.end)
+                    callee=primary, args=args, span=Span(primary.span.start, self.peek().span.start)
                 )
                 continue
             if self.at(TokenType.Dot):
@@ -251,6 +273,9 @@ class Parser:
                 raw = tok.raw
                 val = int(raw) if raw.isdigit() else float(raw)
                 return Literal(value=val, span=tok.span)
+            case TokenType.Nil:
+                tok = self.advance()
+                return Literal(value=NIL, span=tok.span)
             case TokenType.Ident:
                 tok = self.advance()
                 return Variable(name=tok, span=tok.span)
@@ -273,6 +298,27 @@ class Parser:
                 return Literal(value=raw, span=tok.span)
             case _:
                 raise AssertionError(self.sm.err_here(tok, f"unexpected token {tok.kind}"))
+
+    def parse_args(self) -> list[Expr]:
+        args: list[Expr] = []
+        _l = self.expect(TokenType.OpenParen, "expected (")
+        if not self.at(TokenType.CloseParen):
+            args.append(self.parse_expr())
+            while self.at(TokenType.Comma):
+                _ = self.advance()
+                args.append(self.parse_expr())
+        _r = self.expect(TokenType.CloseParen, "expected )")
+        return args
+
+    def parse_block(self) -> BlockStmt:
+        start = self.expect(TokenType.OpenCurly, "expected {")
+        self.consume_terminators()
+        stmts: list[Stmt] = []
+        while not self.at(TokenType.CloseCurly):
+            stmts.append(self.parse_stmt())
+            self.consume_terminators()
+        end = self.expect(TokenType.CloseCurly, "expected }")
+        return BlockStmt(stmts, Span(start.span.start, end.span.end))
 
     def parse_stmt(self) -> Stmt:
         """
@@ -365,6 +411,24 @@ class Parser:
                 target = Variable(Token(TokenType.Ident, "_kentid_", Span(start.span.start, start.span.end)), Span(start.span.start, start.span.end))
                 value = Literal("cauman@kent.edu", Span(start.span.start, start.span.end))
                 return LetStmt(Assign(target, value, Span(start.span.start, end.span.end)), Span(start.span.start, end.span.end))
+            case TokenType.Fn:
+                fn = self.advance()
+                name = self.expect(TokenType.Ident, "expected a function name")
+                args = self.parse_args()
+                var_args: list[Variable] = []
+                for arg in args:
+                    assert isinstance(arg, Variable)
+                    var_args.append(arg)
+                block = self.parse_block()
+                print(args)
+                return FunctionStmt(name, var_args, block, Span(fn.span.start, block.span.end))
+            case TokenType.Return:
+                ret = self.advance()
+                expr = None
+                if not self.at(TokenType.Semi):
+                    expr = self.parse_binary(0)
+                semi = self.expect(TokenType.Semi, "expected ;")
+                return ReturnStmt(expr, Span(ret.span.start, semi.span.end))
             case _:
                 expr = self.parse_expr()
                 _ = self.expect(TokenType.Semi, "expected ;")

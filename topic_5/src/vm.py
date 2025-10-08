@@ -44,6 +44,7 @@ class VM:
     ops: list[int]
     a: list[int]
     b: list[int]
+    c: list[int]
 
     running: bool
 
@@ -59,6 +60,7 @@ class VM:
         self.running = False
         self.a = [(instr.a or 0) for instr in codeobject.code]
         self.b = [(instr.b or 0) for instr in codeobject.code]
+        self.c = [(instr.c or 0) for instr in codeobject.code]
         self.ops = [instr.op for instr in codeobject.code]
 
         self.DISPATCH: list[Any] = [self.undefined] * len(Op)
@@ -69,6 +71,7 @@ class VM:
         self.DISPATCH[Op.MUL] = self.op_mul
         self.DISPATCH[Op.DIV] = self.op_div
         self.DISPATCH[Op.SUB] = self.op_sub
+        self.DISPATCH[Op.MOD] = self.op_mod
 
         self.DISPATCH[Op.JMP] = self.op_jmp
         self.DISPATCH[Op.STOREG] = self.op_storeg
@@ -81,13 +84,59 @@ class VM:
         self.DISPATCH[Op.NEQ] = self.op_neq
         self.DISPATCH[Op.LT] = self.op_lt
         self.DISPATCH[Op.GT] = self.op_gt
+        self.DISPATCH[Op.LTEQ] = self.op_lteq
+        self.DISPATCH[Op.GTEQ] = self.op_gteq
         self.DISPATCH[Op.STOREG_K] = self.op_storeg_k
 
-    def op_storeg_k(self, a: int, b: int):
+        self.DISPATCH[Op.CALL] = self.op_call
+        self.DISPATCH[Op.LOAD_ARG] = self.op_load_arg
+        self.DISPATCH[Op.RET] = self.op_ret
+        self.DISPATCH[Op.STORE] = self.op_store
+        self.DISPATCH[Op.LOAD] = self.op_load
+
+
+    def op_load(self, a: int, _b: int, _c: int):
+        item = self.stack[self.fp+3+a]
+        self.push_stack(item)
+        self.bump()
+
+    def op_store(self, a: int, _b: int, _c: int):
+        item = self.pop_stack()
+        self.stack[self.fp+3+a] = item
+        self.bump()
+
+    def op_ret(self, a: int, _b: int, _c: int):
+        retv = self.pop_stack()
+        old_fp = self.fp
+        self.sp = self.stack[self.fp+1]
+        self.fp = self.stack[self.fp]
+        ret_addr = self.pop_stack()
+        for _arg in range(self.stack[old_fp+2]):
+            self.pop_stack()
+        self.push_stack(retv)
+        self.goto(ret_addr)
+
+    def op_load_arg(self, a: int, _b: int, _c: int):
+        item = self.stack[self.fp-2-a]
+        self.push_stack(item)
+        self.bump()
+
+    def op_call(self, addr: int, nlocals: int, c: int):
+        self.push_stack(self.ip + 1)
+        old_fp = self.fp
+        old_sp = self.sp
+        self.fp = self.sp
+        self.push_stack(old_fp)
+        self.push_stack(old_sp)
+        self.push_stack(c)
+        self.sp += nlocals
+        self.goto(addr)
+
+    def op_storeg_k(self, a: int, b: int, _c: int):
         self.globals[a] = b
         self.bump()
 
-    def op_call_builtin(self, a: int, b: int):
+    def op_call_builtin(self, a: int, b: int, _c: int):
         args: list[object] = self.stack[self.sp - b : self.sp]
         self.sp -= b
         if self.builtins[a] is None:
@@ -96,59 +145,65 @@ class VM:
         self.push_stack(res)
         self.bump()
 
-    def op_pushk(self, a: int, _b: int):
+    def op_pushk(self, a: int, _b: int, _c: int):
         self.push_stack(self.codeobject.consts[a])
         self.bump()
 
-    def op_halt(self, _a: int, _b: int):
+    def op_halt(self, _a: int, _b: int, _c: int):
         self.running = False
 
-    def op_add(self, _a: int, _b: int):
+    def op_add(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left + right)
         self.bump()
 
-    def op_mul(self, _a: int, _b: int):
+    def op_mul(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left * right)
         self.bump()
 
-    def op_div(self, _a: int, _b: int):
+    def op_div(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left / right)
         self.bump()
 
-    def op_sub(self, _a: int, _b: int):
+    def op_sub(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left - right)
         self.bump()
 
-    def op_jmp(self, a: int, _b: int):
+    def op_mod(self, _a: int, _b: int, _c: int):
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left % right)
+        self.bump()
+
+    def op_jmp(self, a: int, _b: int, _c: int):
         self.goto(a)
 
-    def op_storeg(self, a: int, _b: int):
+    def op_storeg(self, a: int, _b: int, _c: int):
         item = self.pop_stack()
         self.write_global(a, item)
         self.bump()
 
-    def op_loadg(self, a: int, _b: int):
+    def op_loadg(self, a: int, _b: int, _c: int):
         item = self.globals[a]
         self.push_stack(item)
         self.bump()
 
-    def op_nop(self, _a: int, _b: int):
+    def op_nop(self, _a: int, _b: int, _c: int):
         self.bump()
 
-    def op_popn(self, a: int, _b: int):
+    def op_popn(self, a: int, _b: int, _c: int):
         self.sp -= a
         self.bump()
 
     # NOTE: boolean logic
-    def op_jz(self, a: int, _b: int):
+    def op_jz(self, a: int, _b: int, _c: int):
         cond = self.pop_stack()
         # if not self.is_truthy(cond):
         if not cond:
@@ -156,33 +211,45 @@ class VM:
         else:
             self.bump()
 
-    def op_neg(self, _a: int, _b: int):
+    def op_neg(self, _a: int, _b: int, _c: int):
         val = self.pop_stack()
         self.push_stack(-val)
         self.bump()
 
-    def op_eq(self, _a: int, _b: int):
+    def op_eq(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left == right)
         self.bump()
 
-    def op_neq(self, _a: int, _b: int):
+    def op_neq(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left != right)
         self.bump()
 
-    def op_lt(self, _a: int, _b: int):
+    def op_lt(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left < right)
         self.bump()
 
-    def op_gt(self, _a: int, _b: int):
+    def op_gt(self, _a: int, _b: int, _c: int):
         right = self.pop_stack()
         left = self.pop_stack()
         self.push_stack(left > right)
+        self.bump()
+
+    def op_gteq(self, _a: int, _b: int, _c: int):
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left >= right)
+        self.bump()
+
+    def op_lteq(self, _a: int, _b: int, _c: int):
+        right = self.pop_stack()
+        left = self.pop_stack()
+        self.push_stack(left <= right)
         self.bump()
 
     def undefined(self, _a: int, _b: int):
@@ -221,9 +288,14 @@ class VM:
         if len(self.codeobject.code) <= 0:
             return
         self.running = True
+        DISPATCH = self.DISPATCH
+        a = self.a
+        b = self.b
+        c = self.c
         while self.running:
             ip = self.ip
             op = self.ops[ip]
-            a = self.a[ip]
-            b = self.b[ip]
-            self.DISPATCH[op](a, b)
+            a_op = a[ip]
+            b_op = b[ip]
+            c_op = c[ip]
+            DISPATCH[op](a_op, b_op, c_op)

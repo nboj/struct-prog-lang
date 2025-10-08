@@ -42,7 +42,11 @@ if __name__ == "__main__":
             vm = VM(code)
             print("=== OUT ===")
             start = time.perf_counter_ns()
-            vm.run()
+            err = None
+            try:
+                vm.run()
+            except Exception as e:
+                err = e
             end = time.perf_counter_ns()
             print(f"=== {(end-start)/1e+9} ===")
 
@@ -58,6 +62,8 @@ if __name__ == "__main__":
             print(f"stack: {debug_stack(vm.stack)}")
             print(f"sp={vm.sp}")
             print()
+            if err:
+                raise err
 
         else:
             print("No text.")

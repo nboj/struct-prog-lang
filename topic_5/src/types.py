@@ -5,6 +5,7 @@ from typing import override
 
 class SymbolType(Enum):
     Local = auto()
+    Arg = auto()
     Global = auto()
     Builtin = auto()
     Function = auto()
@@ -23,7 +24,7 @@ class Symbol:
 
     @override
     def __repr__(self):
-        return f"{self.name}:{self.symbol_id}"
+        return f"{self.name}:{self.symbol_id}:{self.sym_type}"
 
 
 @dataclass(frozen=True)
@@ -38,11 +39,18 @@ class Op(IntEnum):
     DIV = auto()
     MUL = auto()
     NEG = auto()
+    MOD = auto()
 
     EQ = auto()
     NEQ = auto()
     LT = auto()
     GT = auto()
+    LTEQ = auto()
+    GTEQ = auto()
+
+    RET = auto()
+    LOAD_ARG = auto()
+    CALL = auto()
 
     LOAD = auto()
     STORE = auto()
@@ -75,6 +83,7 @@ class Instr:
     op: Op | PseudoOp
     a: int | None = None
     b: int | None = None
+    c: int | None = None
 
     # TODO: Try to find a better way than manually defining this
     def op_str(self, op: Op | PseudoOp):
@@ -95,6 +104,15 @@ class Instr:
                     return "SUB"
                 case Op.NEG:
                     return "NEG"
+                case Op.MOD:
+                    return "MOD"
+
+                case Op.RET:
+                    return "RET"
+                case Op.LOAD_ARG:
+                    return "LOAD_ARG"
+                case Op.CALL:
+                    return "CALL"
 
                 case Op.EQ:
                     return "EQ"
@@ -104,6 +122,10 @@ class Instr:
                     return "LT"
                 case Op.GT:
                     return "GT"
+                case Op.GTEQ:
+                    return "GTEQ"
+                case Op.LTEQ:
+                    return "LTEQ"
 
                 case Op.STOREG_K:
                     return "STOREG_K"
@@ -139,29 +161,46 @@ class Instr:
         
     @override
     def __repr__(self) -> str:
-        return f"{self.op_str(self.op)} {self.a} {self.b}"
+        return f"{self.op_str(self.op)} {self.a or "_"} {self.b or "_"} {self.c or "_"}"
 
 
 class SlotLayout:
     map: dict[Symbol, int]
+    args: dict[Symbol, int]
     next_slot: int
+    next_arg_slot: int
 
     def __init__(self):
         self.map = {}
+        self.args = {}
         self.next_slot = 0
+        self.next_arg_slot = 0
 
     def ensure_slot(self, sym: Symbol):
-        slot = self.map.get(sym)
-        if slot is None:
-            self.map[sym] = self.next_slot
-            slot = self.next_slot
-            self.next_slot += 1
-        return slot
+        if sym.sym_type == SymbolType.Arg:
+            slot = self.args.get(sym)
+            if slot is None:
+                self.args[sym] = self.next_arg_slot
+                slot = self.next_arg_slot
+                self.next_arg_slot += 1
+            return slot
+        else:
+            slot = self.map.get(sym)
+            if slot is None:
+                self.map[sym] = self.next_slot
+                slot = self.next_slot
+                self.next_slot += 1
+            return slot
 
     def get_slot(self, sym: Symbol):
-        if sym not in self.map:
-            raise AssertionError(f"slot not assigned for {sym}")
-        return self.map[sym]
+        if sym.sym_type == SymbolType.Arg:
+            if sym not in self.args:
+                raise AssertionError(f"slot not assigned for {sym}")
+            return self.args[sym]
+        else:
+            if sym not in self.map:
+                raise AssertionError(f"slot not assigned for {sym}")
+            return self.map[sym]
 
 
 class ModuleLayout:

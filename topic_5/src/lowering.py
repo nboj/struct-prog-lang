@@ -1,3 +1,4 @@
+from dis import Bytecode
 from .source_map import SourceMap
 from .binder import *
 from .types import NIL, CodeObject, Instr, ModuleLayout, Nil, Op, PseudoOp, SlotLayout
@@ -16,6 +17,7 @@ class Lowering:
     modules: list[ModuleLayout]
     nil_idx: int
     loop_stack: list[tuple[int, int]] # NOTE: (start, end)
+    fn_entry_label: dict[int, int]
 
     def __init__(self, program: BoundProgram, source_map: SourceMap):
         self.sm = source_map
@@ -34,6 +36,8 @@ class Lowering:
         self.fn_stack = []
         self.modules = [ModuleLayout("main", 0)]
         self.loop_stack = []
+
+        self.fn_entry_label = {}
 
     def intern_const(self, const: int | str | bool | float | Nil):
         key = (type(const), const) # NOTE: this is a python method to prevent collisions
@@ -65,11 +69,14 @@ class Lowering:
                 return
             sym = expr.sym
             if sym.sym_type == SymbolType.Global:
-                slot = self.get_main_module().get_global(sym)
+                slot = self.get_main_module().ensure_global(sym)
                 self.emit_pseudo(Op.LOADG, slot)
             elif sym.sym_type == SymbolType.Local:
                 slot = self.get_current_fn_layout().get_slot(sym)
                 self.emit_pseudo(Op.LOAD, slot)
+            elif sym.sym_type == SymbolType.Arg:
+                slot = self.get_current_fn_layout().get_slot(sym)
+                self.emit_pseudo(Op.LOAD_ARG, slot)
             else:
                 raise AssertionError(f"unhandled BoundVariable SymbolType: {sym.sym_type}")
         elif isinstance(expr, BoundAssign):
@@ -77,7 +84,7 @@ class Lowering:
                 self.lower_expression(expr.value)
                 target_sym = expr.target.sym
                 if target_sym.sym_type == SymbolType.Global:
-                    target_slot = self.get_main_module().get_global(target_sym)
+                    target_slot = self.get_main_module().ensure_global(target_sym)
                     self.emit_pseudo(Op.STOREG, target_slot)
                     if not want_value:
                         return
@@ -105,8 +112,17 @@ class Lowering:
                     self.emit_pseudo(Op.CALL_BUILTIN, sym.symbol_id, len(expr.args))
                     if not want_value:
                         self.emit_pseudo(Op.POPN, 1)
+                elif sym.sym_type == SymbolType.Function:
+                    for arg in reversed(expr.args):
+                        self.lower_expression(arg)
+                    for fn in self.program.body:
+                        if fn.sym.symbol_id == sym.symbol_id:
+                            self.emit_pseudo(Op.CALL, self.fn_entry_label[sym.symbol_id], fn.nlocals, len(expr.args))
+                            if not want_value:
+                                self.emit_pseudo(Op.POPN, 1)
+                            break
                 else:
-                    raise AssertionError("custom functions not implemented in lowering.py")
+                    raise AssertionError(f"symbol type not implemented in lowering.py: {sym.sym_type}")
             else:
                 raise AssertionError(f"unhandled callee expr: {expr}")
         elif isinstance(expr, BoundBinary):
@@ -130,6 +146,10 @@ class Lowering:
                     self.lower_expression(left)
                     self.lower_expression(right)
                     self.emit_pseudo(Op.SUB)
+                case TokenType.Mod:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
+                    self.emit_pseudo(Op.MOD)
                 case TokenType.Divide:
                     self.lower_expression(left)
                     self.lower_expression(right)
@@ -154,6 +174,15 @@ class Lowering:
                     self.lower_expression(left)
                     self.lower_expression(right)
                     self.emit_pseudo(Op.GT)
+                case TokenType.LtEq:
+                    endL = self.new_label()
+                    self.lower_expression(left)
+                    self.lower_expression(right)
+                    self.emit_pseudo(Op.LTEQ)
+                case TokenType.GtEq:
+                    self.lower_expression(left)
+                    self.lower_expression(right)
+                    self.emit_pseudo(Op.GTEQ)
                 case TokenType.DoublePipe:
                     endL = self.new_label()
                     rhsL = self.new_label()
@@ -219,15 +248,50 @@ class Lowering:
                     #self.emit_pseudo(Op.NOT)
                 case _:
                     raise AssertionError(self.sm.to_err(expr, f"unhandled expr type in lower_expression in lowering.py: {expr}"))
+        elif isinstance(expr, BoundAugAssign):
+            if isinstance(expr.target, BoundVariable): 
+                target_sym = expr.target.sym
+                op = None
+                match expr.op.kind:
+                    case TokenType.PlusEq:
+                        op = Op.ADD
+                    case _:
+                        raise AssertionError(self.sm.to_err(expr, "op not handled in augassign lowering"))
+                if target_sym.sym_type == SymbolType.Global:
+                    target_slot = self.get_main_module().ensure_global(target_sym)
+                    self.emit_pseudo(Op.LOADG, target_slot)
+                    self.lower_expression(expr.value)
+                    self.emit_pseudo(op)
+                    self.emit_pseudo(Op.STOREG, target_slot)
+                    if not want_value:
+                        return
+                    self.emit_pseudo_nil()
+                elif target_sym.sym_type == SymbolType.Local:
+                    target_slot = self.get_current_fn_layout().get_slot(target_sym)
+                    self.emit_pseudo(Op.LOAD, target_slot)
+                    self.lower_expression(expr.value)
+                    self.emit_pseudo(op)
+                    self.emit_pseudo(Op.STORE, target_slot)
+                    if not want_value:
+                        return
+                    self.emit_pseudo_nil()
+                else:
+                    raise AssertionError(f"unhandled SymbolType in lowering.py: {target_sym.sym_type}")
+            else:
+                raise AssertionError(
+                    self.sm.to_err(
+                        expr, "unhandled BoundExpr in lowering.py BoundAssign"
+                    )
+                )
         else:
             raise AssertionError(
                 self.sm.to_err(expr, f"unhandled BoundExpr in lowering.py: {expr}")
             )
 
     def emit_pseudo(
-        self, op: Op | PseudoOp, a: int | None = None, b: int | None = None
+        self, op: Op | PseudoOp, a: int | None = None, b: int | None = None, c: int | None = None
     ):
-        self.pseudo_bytecode.append(Instr(op, a, b))
+        self.pseudo_bytecode.append(Instr(op, a, b, c))
 
     def new_label(self) -> int:
         label = self.label_counter
@@ -289,14 +353,40 @@ class Lowering:
             self.emit_pseudo(PseudoOp.JMP_LABEL, self.loop_stack[len(self.loop_stack)-1][0])
         elif isinstance(stmt, BoundBlockStmt):
             self.lower_block(stmt)
+        elif isinstance(stmt, BoundFunction):
+            self.fn_entry_label[stmt.sym.symbol_id] = self.new_label()
+            self.emit_pseudo(PseudoOp.LABEL, self.fn_entry_label[stmt.sym.symbol_id])
+            if not stmt.sym.sym_type == SymbolType.Function:
+                assert False
+            self.fn_stack.append(SlotLayout())
+            for arg in stmt.args:
+                slot = self.get_current_fn_layout().ensure_slot(arg)
+            self.lower_block(stmt.body)
+            self.emit_pseudo(Op.PUSHK, self.nil_idx)
+            self.emit_pseudo(Op.RET)
+            _ = self.fn_stack.pop()
+        elif isinstance(stmt, BoundReturnStmt):
+            if stmt.expr:
+                self.lower_expression(stmt.expr)
+            else:
+                self.emit_pseudo(Op.PUSHK, self.nil_idx)
+            self.emit_pseudo(Op.RET)
         else:
             raise AssertionError(
                 self.sm.to_err(stmt, f"unhandled BoundStmt in lowering.py: {stmt}")
             )
 
     def lower(self):
-        for stmt in self.program.body[0].body.stmts:
-            self.lower_stmt(stmt)
+        entry = self.new_label()
+        if len(self.program.body) != 1:
+            self.emit_pseudo(PseudoOp.JMP_LABEL, entry)
+        for stmt in self.program.body:
+            if stmt.sym.name == "module_init":
+                self.emit_pseudo(PseudoOp.LABEL, entry)
+                for s in stmt.body.stmts:
+                    self.lower_stmt(s)
+            else:
+                self.lower_stmt(stmt)
 
         map: dict[int, int] = {} # NOTE: id, location
         pc: int = 0
@@ -328,7 +418,12 @@ class Lowering:
                         #self.emit(Op.JMP, map[instr.a])
                         self.bytecode.append(Instr(Op.JMP, map[instr.a]))
             else:
-                self.bytecode.append(instr)
+                match instr.op:
+                    case Op.CALL:
+                        assert instr.a is not None and instr.b is not None and instr.c is not None, "CALL attr: a was None"
+                        self.bytecode.append(Instr(Op.CALL, map[instr.a], instr.b, instr.c))
+                    case _:
+                        self.bytecode.append(instr)
 
         self.bytecode.append(Instr(Op.HALT))
         return CodeObject(self.bytecode, self.consts, 0, len(self.get_main_module().layout.map))
