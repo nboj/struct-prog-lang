@@ -102,7 +102,8 @@ class VM:
         self.ip += 1
 
     def op_store(self, a: int, _b: int, _c: int):
-        item = self.pop_stack()
+        self.sp -= 1
+        item = self.stack[self.sp]
         self.stack[self.fp+3+a] = item
         self.ip += 1
 
@@ -127,7 +128,8 @@ class VM:
         self.ip += 1
 
     def op_call(self, addr: int, nlocals: int, c: int):
-        self.push_stack(self.ip + 1)
+        self.stack[self.sp] = self.ip + 1
+        self.sp += 1
         old_fp = self.fp
         old_sp = self.sp
         self.fp = self.sp
