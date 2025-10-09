@@ -78,6 +78,77 @@ class Nil:
 
 NIL = Nil()
 
+def op_str(op: Op | PseudoOp):
+    if isinstance(op, Op):
+        match op:
+            case Op.LOAD:
+                return "LOAD"
+            case Op.STORE:
+                return "STORE"
+
+            case Op.ADD:
+                return "ADD"
+            case Op.MUL:
+                return "MUL"
+            case Op.DIV:
+                return "DIV"
+            case Op.SUB:
+                return "SUB"
+            case Op.NEG:
+                return "NEG"
+            case Op.MOD:
+                return "MOD"
+
+            case Op.RET:
+                return "RET"
+            case Op.LOAD_ARG:
+                return "LOAD_ARG"
+            case Op.CALL:
+                return "CALL"
+
+            case Op.EQ:
+                return "EQ"
+            case Op.NEQ:
+                return "NEQ"
+            case Op.LT:
+                return "LT"
+            case Op.GT:
+                return "GT"
+            case Op.GTEQ:
+                return "GTEQ"
+            case Op.LTEQ:
+                return "LTEQ"
+
+            case Op.STOREG_K:
+                return "STOREG_K"
+            case Op.POPN:
+                return "POPN"
+            case Op.PUSH:
+                return "PUSH"
+            case Op.PUSHK:
+                return "PUSHK"
+            case Op.JZ:
+                return "JZ"
+            case Op.JMP:
+                return "JMP"
+            case Op.NOP:
+                return "NOP"
+            case Op.LOADG:
+                return "LOADG"
+            case Op.STOREG:
+                return "STOREG"
+            case Op.CALL_BUILTIN:
+                return "CALL_BUILTIN"
+            case Op.HALT:
+                return "HALT"
+    else:
+        match op:
+            case PseudoOp.LABEL:
+                return "LABEL"
+            case PseudoOp.JZ_LABEL:
+                return "JZ_LABEL"
+            case PseudoOp.JMP_LABEL:
+                return "JMP_LABEL"
 @dataclass(frozen=True)
 class Instr:
     op: Op | PseudoOp
@@ -86,78 +157,9 @@ class Instr:
     c: int | None = None
 
     # TODO: Try to find a better way than manually defining this
+
     def op_str(self, op: Op | PseudoOp):
-        if isinstance(op, Op):
-            match op:
-                case Op.LOAD:
-                    return "LOAD"
-                case Op.STORE:
-                    return "STORE"
-
-                case Op.ADD:
-                    return "ADD"
-                case Op.MUL:
-                    return "MUL"
-                case Op.DIV:
-                    return "DIV"
-                case Op.SUB:
-                    return "SUB"
-                case Op.NEG:
-                    return "NEG"
-                case Op.MOD:
-                    return "MOD"
-
-                case Op.RET:
-                    return "RET"
-                case Op.LOAD_ARG:
-                    return "LOAD_ARG"
-                case Op.CALL:
-                    return "CALL"
-
-                case Op.EQ:
-                    return "EQ"
-                case Op.NEQ:
-                    return "NEQ"
-                case Op.LT:
-                    return "LT"
-                case Op.GT:
-                    return "GT"
-                case Op.GTEQ:
-                    return "GTEQ"
-                case Op.LTEQ:
-                    return "LTEQ"
-
-                case Op.STOREG_K:
-                    return "STOREG_K"
-                case Op.POPN:
-                    return "POPN"
-                case Op.PUSH:
-                    return "PUSH"
-                case Op.PUSHK:
-                    return "PUSHK"
-                case Op.JZ:
-                    return "JZ"
-                case Op.JMP:
-                    return "JMP"
-                case Op.NOP:
-                    return "NOP"
-                case Op.LOADG:
-                    return "LOADG"
-                case Op.STOREG:
-                    return "STOREG"
-                case Op.CALL_BUILTIN:
-                    return "CALL_BUILTIN"
-                case Op.HALT:
-                    return "HALT"
-        else:
-            match op:
-                case PseudoOp.LABEL:
-                    return "LABEL"
-                case PseudoOp.JZ_LABEL:
-                    return "JZ_LABEL"
-                case PseudoOp.JMP_LABEL:
-                    return "JMP_LABEL"
-
+        return op_str(op)
         
     @override
     def __repr__(self) -> str:

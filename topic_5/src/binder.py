@@ -354,10 +354,13 @@ class Binder:
         elif isinstance(stmt, FunctionStmt):
             return self.bind_function(stmt)
         elif isinstance(stmt, ReturnStmt):
-            bound_expr = None
-            if stmt.expr:
-                bound_expr = self.bind_expression(stmt.expr)
-            return BoundReturnStmt(bound_expr, stmt.span)
+            if self.in_function():
+                bound_expr = None
+                if stmt.expr:
+                    bound_expr = self.bind_expression(stmt.expr)
+                return BoundReturnStmt(bound_expr, stmt.span)
+            else:
+                raise AssertionError(self.sm.to_err(stmt, "tried returning outside a function context"))
         else:
             raise AssertionError(f"Unhandled stmt in binder: {stmt}")
 

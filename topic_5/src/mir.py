@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+from typing import override
 
 from .tokenizer import Token, TokenType
-from .types import NIL, Nil, Op, Symbol, SymbolType
+from .types import NIL, Nil, Op, Symbol, SymbolType, op_str
 from .binder import (
     BoundAssign,
     BoundAugAssign,
@@ -21,66 +22,113 @@ from .binder import (
 )
 
 
-@dataclass(frozen=True)
 class MStmt:
     pass
 
 
-@dataclass(frozen=True)
 class TermStmt:
     succ: list["Block"]
 
+    def __init__(self, succ: list["Block"]) -> None:
+        self.succ = succ
 
-@dataclass(frozen=True)
 class Branch(TermStmt):
     condition: "Operand"
     true_block_id: int
     false_block_id: int
     succ: list["Block"]
 
-@dataclass(frozen=True)
+    def __init__(self, condition: "Operand", true_block_id: int, false_block_id: int, succ: list["Block"]) -> None:
+        self.condition = condition
+        self.true_block_id = true_block_id
+        self.false_block_id = false_block_id
+        super().__init__(succ)
+
+    @override
+    def __repr__(self) -> str:
+        return f"if {self.condition} then Goto({self.true_block_id}) else Goto({self.false_block_id})"
+
 class Goto(TermStmt):
     block_id: int
     succ: list["Block"]
+
+    def __init__(self, block_id: int, succ: list["Block"]) -> None:
+        super().__init__(succ)
+        self.block_id = block_id
+
+    @override
+    def __repr__(self) -> str:
+        return f"Goto({self.block_id})"
 
 @dataclass(frozen=True)
 class Halt(TermStmt):
     succ: list["Block"]
 
-@dataclass(frozen=True)
 class Place:
     pass
 
 
-@dataclass(frozen=True)
 class Local(Place):
     id: int
     sym: Symbol
 
+    def __init__(self, id: int, sym: Symbol):
+        self.id = id
+        self.sym = sym
 
-@dataclass(frozen=True)
+    @override
+    def __repr__(self) -> str:
+        return f"Local({self.sym.name}{self.sym.symbol_id})"
+
 class Global(Place):
     id: int
     sym: Symbol
 
+    def __init__(self, id: int, sym: Symbol):
+        self.id = id
+        self.sym = sym
 
-@dataclass(frozen=True)
+    @override
+    def __repr__(self) -> str:
+        return f"Global({self.sym.name}{self.sym.symbol_id})"
+
+
 class RValue:
     pass
 
 
-@dataclass(frozen=True)
 class Const(RValue):
     value: int | float | str | bool | Nil
 
-@dataclass(frozen=True)
+    def __init__(self, value: int | float | str | bool | Nil) -> None:
+        self.value = value
+
+    @override
+    def __repr__(self) -> str:
+        return f"Const({self.value})"
+
+
 class Temp(Place):
     id: int
 
+    def __init__(self, id: int):
+        self.id = id
 
-@dataclass(frozen=True)
+    @override
+    def __repr__(self) -> str:
+        return f"T{self.id}"
+
+
 class Copy:
     origin: Place
+
+    def __init__(self, origin: Place):
+        self.origin = origin
+
+    @override
+    def __repr__(self) -> str:
+        return f"Copy({self.origin})"
+
 
 
 @dataclass(frozen=True)
@@ -91,17 +139,30 @@ class Move:
 type Operand = Const | Copy | Move
 
 
-@dataclass(frozen=True)
 class BinOp(RValue):
     op: Op
     lhs: Operand
     rhs: Operand
 
+    def __init__(self, op: Op, lhs: Operand, rhs: Operand):
+        self.op = op
+        self.lhs = lhs
+        self.rhs = rhs
 
-@dataclass(frozen=True)
+    @override
+    def __repr__(self) -> str:
+        return f"{op_str(self.op)} {self.lhs}, {self.rhs}"
+
+
 class DirectFunc:
-    func_id: int
-    func_type: SymbolType
+    sym: Symbol
+
+    def __init__(self, sym: Symbol) -> None:
+        self.sym = sym
+
+    @override
+    def __repr__(self) -> str:
+        return f"{self.sym.name}"
 
 
 @dataclass(frozen=True)
@@ -116,14 +177,29 @@ class Call(RValue):
     args: list[Operand]
 
 
-@dataclass(frozen=True)
 class Assign(MStmt):
     lval: Place
     rval: RValue | Operand
 
-@dataclass(frozen=True)
+    def __init__(self, lval: Place, rval: RValue | Operand):
+        self.lval = lval
+        self.rval = rval
+
+    @override
+    def __repr__(self):
+        return f"{self.lval} = {self.rval}"
+
 class Return(MStmt):
     val: Operand | RValue
+
+    def __init__(self, val: Operand | RValue) -> None:
+        self.val = val
+
+    @override
+    def __repr__(self) -> str:
+        return f"Return({self.val})"
+
+
 
 @dataclass(frozen=True)
 class Phi(RValue):
@@ -142,6 +218,9 @@ class Block:
         self.term = Halt([])
         self.preds = []
 
+    @override
+    def __repr__(self) -> str:
+        return f"Block({self.id})"
 
 class CFGBuilder:
     tmp_counter: int
@@ -280,7 +359,7 @@ class CFGBuilder:
                 sym.sym_type == SymbolType.Builtin
                 or callee.sym.sym_type == SymbolType.Function
             ):
-                return DirectFunc(callee.sym.symbol_id, sym.sym_type)
+                return DirectFunc(sym)
             else:
                 raise AssertionError(
                     f"Unhandled callee symbol type in lower_callee: {type(sym.sym_type)}"
@@ -456,88 +535,190 @@ class DomTreeBuilder:
         self.entry = DominatorNode(None)
         self.map = {}
 
+
     def build(self):
-        if len(self.cfg.blocks) <= 0:
+        """
+        Compute immediate dominators (idom) using the classic reverse-postorder
+        iterative algorithm (Cooper/Harvey/Kennedy style) and then build the
+        dominator tree (self.map, self.entry) from that idom map.
+
+        Assumes:
+          - self.cfg.blocks[0] is the function's entry block.
+          - Block.preds and Block.term.succ are populated.
+        """
+
+        # --- 0) Trivial empty CFG guard
+        if not self.cfg.blocks:
+            self.entry = DominatorNode(None)
+            self.map = {}
             return
-        map: dict[int, Block] = {}
-        self.entry.block_ref = self.cfg.blocks[0]
-        for block in self.cfg.blocks:
-            map[block.id] = block
 
-        self.map = {self.entry.block_ref.id: self.entry}
+        # --- 1) Reverse postorder over the *reachable* subgraph
+        entry_block = self.cfg.blocks[0]
 
-        def get_dominator(block:Block):
-            if len(block.preds) == 1:
-                p = block.preds[0]
-                if p.id == block.id:
-                    return None
-                dom_node = self.map.get(p.id)
-                if not dom_node:
-                    dom_node = DominatorNode(p)
-                    self.map[p.id] = dom_node
-                return dom_node
-            elif len(block.preds) == 0:
-                return None
-            else:
-                dominators: list[DominatorNode] = []
+        seen: set[int] = set()
+        post: list[Block] = []
 
-                for pred in block.preds:
-                    same = None
-                    for succ in block.term.succ:
-                        if pred.id == succ.id:
-                            same = pred
-                            break
-                    if same is not None:
-                        continue
-                    dominator = get_dominator(pred)
-                    #assert dominator is not None
-                    if dominator is None:
-                        assert self.entry.block_ref is not None
-                        return self.map[self.entry.block_ref.id]
-                    dominators.append(dominator)
+        def dfs(b: Block):
+            if b.id in seen:
+                return
+            seen.add(b.id)
+            for s in b.term.succ:
+                dfs(s)
+            post.append(b)
 
-                while True:
-                    prev = None
-                    same = True
-                    for dom in dominators:
-                        if prev is None:
-                            prev = dom
-                            continue
-                        if prev != dom:
-                            same = False
-                            break
-                    if same and len(dominators) > 0:
-                        return dominators[0]
-                    elif same:
-                        return None
-                    else:
-                        new_doms: list[DominatorNode] = []
-                        for dom in dominators:
-                            if dom.parent is None:
-                                continue
-                            new_doms.append(dom.parent)
-                        dominators = new_doms
+        dfs(entry_block)
+        rpo = list(reversed(post))                 # reverse postorder
+        index = {b.id: i for i, b in enumerate(rpo)}
 
-        def compute_node(block: Block):
-            node = DominatorNode(block)
-            dominator = get_dominator(block)
-            if dominator is not None:
-                dominator.children.append(node)
-            node.parent = dominator
-            self.map[block.id] = node
-            return node
+        # If you ever want to skip unreachable blocks, we've already done so by construction.
+        # rpo now contains only reachable blocks, in a stable order.
 
-        visited: set[int] = set()
-        def compute_tree(current_node: Block):
-            root = compute_node(current_node)
-            visited.add(current_node.id)
-            for succ in current_node.term.succ:
-                if succ.id in visited:
+        # --- 2) Initialize idom: entry maps to itself, others unknown
+        entry_id = rpo[0].id
+        idom: dict[int, int | None] = {b.id: None for b in rpo}
+        idom[entry_id] = entry_id
+
+        # --- 3) Intersect helper that walks up idom chains by RPO ranks
+        def intersect(a: int, b: int) -> int:
+            # Both a and b are reachable (present in idom dict)
+            while a != b:
+                # climb the one that appears later in RPO
+                while index[a] > index[b]:
+                    na = idom[a]
+                    assert na is not None, f"idom chain broke at {a}"
+                    a = na
+                while index[b] > index[a]:
+                    nb = idom[b]
+                    assert nb is not None, f"idom chain broke at {b}"
+                    b = nb
+            return a
+
+        # --- 4) Iterate to a fixed point
+        changed = True
+        while changed:
+            changed = False
+            # Skip the entry (rpo[0]) — it already has idom to itself
+            for b in rpo[1:]:
+                # Consider only predecessors that are reachable and already have an idom
+                pred_ids = [p.id for p in b.preds if p.id in idom and idom[p.id] is not None]
+                if not pred_ids:
+                    # No information yet (e.g., first round), try next
                     continue
-                _ = compute_tree(succ)
-            return root
 
-        self.entry = compute_tree(self.entry.block_ref)
+                new_idom = pred_ids[0]
+                for pid in pred_ids[1:]:
+                    new_idom = intersect(new_idom, pid)
+
+                if idom[b.id] != new_idom:
+                    idom[b.id] = new_idom
+                    changed = True
+
+        # --- 5) Safety checks: only entry dominates itself; others have a proper idom
+        for bid, dom in idom.items():
+            if bid == entry_id:
+                assert dom == entry_id, "entry must idom itself"
+            else:
+                assert dom is not None and dom != bid, f"bad idom for block {bid}: {dom}"
+
+        # --- 6) Build the dominator tree nodes from the idom map
+        nodes: dict[int, DominatorNode] = {b.id: DominatorNode(b) for b in rpo}
+        for b in rpo:
+            bid = b.id
+            if bid == entry_id:
+                nodes[bid].parent = None
+            else:
+                pid = idom[bid]
+                assert pid is not None
+                parent = nodes[pid]
+                nodes[bid].parent = parent
+                parent.children.append(nodes[bid])
+
+        # --- 7) Publish results
+        self.map = nodes
+        self.entry = nodes[entry_id]
+    #def build(self):
+    #    if len(self.cfg.blocks) <= 0:
+    #        return
+    #    map: dict[int, Block] = {}
+    #    self.entry.block_ref = self.cfg.blocks[0]
+    #    for block in self.cfg.blocks:
+    #        map[block.id] = block
+
+    #    self.map = {self.entry.block_ref.id: self.entry}
+
+    #    def get_dominator(block:Block):
+    #        if len(block.preds) == 1:
+    #            p = block.preds[0]
+    #            if p.id == block.id:
+    #                return None
+    #            dom_node = self.map.get(p.id)
+    #            if not dom_node:
+    #                dom_node = DominatorNode(p)
+    #                self.map[p.id] = dom_node
+    #            return dom_node
+    #        elif len(block.preds) == 0:
+    #            return None
+    #        else:
+    #            dominators: list[DominatorNode] = []
+
+    #            for pred in block.preds:
+    #                same = None
+    #                for succ in block.term.succ:
+    #                    if pred.id == succ.id:
+    #                        same = pred
+    #                        break
+    #                if same is not None:
+    #                    continue
+    #                dominator = get_dominator(pred)
+    #                #assert dominator is not None
+    #                if dominator is None:
+    #                    assert self.entry.block_ref is not None
+    #                    return self.map[self.entry.block_ref.id]
+    #                dominators.append(dominator)
+
+    #            while True:
+    #                prev = None
+    #                same = True
+    #                for dom in dominators:
+    #                    if prev is None:
+    #                        prev = dom
+    #                        continue
+    #                    if prev != dom:
+    #                        same = False
+    #                        break
+    #                if same and len(dominators) > 0:
+    #                    return dominators[0]
+    #                elif same:
+    #                    return None
+    #                else:
+    #                    new_doms: list[DominatorNode] = []
+    #                    for dom in dominators:
+    #                        if dom.parent is None:
+    #                            continue
+    #                        new_doms.append(dom.parent)
+    #                    dominators = new_doms
+
+    #    def compute_node(block: Block):
+    #        node = DominatorNode(block)
+    #        dominator = get_dominator(block)
+    #        if dominator is not None:
+    #            dominator.children.append(node)
+    #        node.parent = dominator
+    #        self.map[block.id] = node
+    #        return node
+
+    #    visited: set[int] = set()
+    #    def compute_tree(current_node: Block):
+    #        root = compute_node(current_node)
+    #        visited.add(current_node.id)
+    #        for succ in current_node.term.succ:
+    #            if succ.id in visited:
+    #                continue
+    #            _ = compute_tree(succ)
+    #        return root
+
+    #    self.entry = compute_tree(self.entry.block_ref)
 
     def print_node(self,node: DominatorNode):
         assert node.block_ref is not None
