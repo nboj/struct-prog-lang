@@ -517,208 +517,111 @@ class MIRContext:
 
 class DominatorNode:
     parent: "DominatorNode | None"
-    block_ref: Block | None
+    block_ref: Block
     children: list["DominatorNode"]
 
-    def __init__(self, block_ref: Block | None, parent: "DominatorNode | None" = None) -> None:
+    def __init__(self, block_ref: Block, parent: "DominatorNode | None" = None) -> None:
         self.parent = parent
         self.children = []
         self.block_ref = block_ref
 
 class DomTreeBuilder:
     cfg: CFGBuilder
-    entry: DominatorNode
+    entry: DominatorNode | None
     map: dict[int, DominatorNode]
 
     def __init__(self, cfg: CFGBuilder) -> None:
         self.cfg = cfg
-        self.entry = DominatorNode(None)
+        self.entry = None
         self.map = {}
 
 
     def build(self):
-        """
-        Compute immediate dominators (idom) using the classic reverse-postorder
-        iterative algorithm (Cooper/Harvey/Kennedy style) and then build the
-        dominator tree (self.map, self.entry) from that idom map.
-
-        Assumes:
-          - self.cfg.blocks[0] is the function's entry block.
-          - Block.preds and Block.term.succ are populated.
-        """
-
-        # --- 0) Trivial empty CFG guard
-        if not self.cfg.blocks:
-            self.entry = DominatorNode(None)
-            self.map = {}
+        blocks: list[Block] = []
+        if len(self.cfg.blocks) <= 0:
             return
-
-        # --- 1) Reverse postorder over the *reachable* subgraph
-        entry_block = self.cfg.blocks[0]
-
+        entry = self.cfg.blocks[0]
         seen: set[int] = set()
-        post: list[Block] = []
-
-        def dfs(b: Block):
-            if b.id in seen:
+        def dfs(block: Block):
+            if not self.map.get(block.id):
+                self.map[block.id] = DominatorNode(block)
+            if block.id in seen:
                 return
-            seen.add(b.id)
-            for s in b.term.succ:
-                dfs(s)
-            post.append(b)
+            seen.add(block.id)
+            for b in block.term.succ:
+                dfs(b)
+            blocks.append(block)
+        dfs(entry)
+        self.entry = self.map[entry.id]
+        blocks.reverse()
 
-        dfs(entry_block)
-        rpo = list(reversed(post))                 # reverse postorder
-        index = {b.id: i for i, b in enumerate(rpo)}
 
-        # If you ever want to skip unreachable blocks, we've already done so by construction.
-        # rpo now contains only reachable blocks, in a stable order.
+        rpo_index = {b.id: i for i, b in enumerate(blocks)}
+        entry_node = self.map[self.entry.block_ref.id]
+        entry_node.parent = entry_node  # temporary sentinel
 
-        # --- 2) Initialize idom: entry maps to itself, others unknown
-        entry_id = rpo[0].id
-        idom: dict[int, int | None] = {b.id: None for b in rpo}
-        idom[entry_id] = entry_id
 
-        # --- 3) Intersect helper that walks up idom chains by RPO ranks
-        def intersect(a: int, b: int) -> int:
-            # Both a and b are reachable (present in idom dict)
-            while a != b:
-                # climb the one that appears later in RPO
-                while index[a] > index[b]:
-                    na = idom[a]
-                    assert na is not None, f"idom chain broke at {a}"
-                    a = na
-                while index[b] > index[a]:
-                    nb = idom[b]
-                    assert nb is not None, f"idom chain broke at {b}"
-                    b = nb
-            return a
-
-        # --- 4) Iterate to a fixed point
+        entry_node = self.map[self.entry.block_ref.id]
+        for n in self.map.values():
+            n.parent = entry_node      # sentinel so nobody is None
+        entry_node.parent = entry_node # entry self-parent during computation
         changed = True
         while changed:
             changed = False
-            # Skip the entry (rpo[0]) — it already has idom to itself
-            for b in rpo[1:]:
-                # Consider only predecessors that are reachable and already have an idom
-                pred_ids = [p.id for p in b.preds if p.id in idom and idom[p.id] is not None]
-                if not pred_ids:
-                    # No information yet (e.g., first round), try next
-                    continue
+            for block in blocks[1:]:  # skip entry
+                preds = [pred for pred in block.preds if pred.id in self.map]
+                new_parent = None
 
-                new_idom = pred_ids[0]
-                for pid in pred_ids[1:]:
-                    new_idom = intersect(new_idom, pid)
+                if len(preds) == 0:
+                    continue  # only entry should have 0 preds here
+                elif len(preds) == 1:
+                    new_parent = self.map[preds[0].id]
+                else:
+                    # fast-path when all preds are same node
+                    first = self.map[preds[0].id]
+                    if all(self.map[p.id] is first for p in preds[1:]):
+                        new_parent = first
+                    else:
+                        # wait until all pred parents exist
+                        if any(self.map[p.id].parent is None for p in preds):
+                            continue
+                        cands = [self.map[p.id] for p in preds]
 
-                if idom[b.id] != new_idom:
-                    idom[b.id] = new_idom
+                        def lca(a: DominatorNode, b: DominatorNode) -> DominatorNode:
+                            x, y = a, b
+                            while x is not y:
+                                while rpo_index[x.block_ref.id] > rpo_index[y.block_ref.id]:
+                                    assert x.parent is not None
+                                    x = x.parent
+                                while rpo_index[y.block_ref.id] > rpo_index[x.block_ref.id]:
+                                    assert y.parent is not None
+                                    y = y.parent
+                                if x is not y:
+                                    assert x.parent is not None
+                                    assert y.parent is not None
+                                    x = x.parent
+                                    y = y.parent
+                            return x
+
+                        acc = cands[0]
+                        for d in cands[1:]:
+                            acc = lca(acc, d)
+                        new_parent = acc
+
+                node = self.map[block.id]
+                if new_parent is not None and node.parent is not new_parent:
+                    node.parent = new_parent
                     changed = True
 
-        # --- 5) Safety checks: only entry dominates itself; others have a proper idom
-        for bid, dom in idom.items():
-            if bid == entry_id:
-                assert dom == entry_id, "entry must idom itself"
-            else:
-                assert dom is not None and dom != bid, f"bad idom for block {bid}: {dom}"
+        self.map[self.entry.block_ref.id].parent = None
+        self.entry = self.map[self.entry.block_ref.id]
 
-        # --- 6) Build the dominator tree nodes from the idom map
-        nodes: dict[int, DominatorNode] = {b.id: DominatorNode(b) for b in rpo}
-        for b in rpo:
-            bid = b.id
-            if bid == entry_id:
-                nodes[bid].parent = None
-            else:
-                pid = idom[bid]
-                assert pid is not None
-                parent = nodes[pid]
-                nodes[bid].parent = parent
-                parent.children.append(nodes[bid])
+        for n in self.map.values():
+            n.children.clear()
+        for n in self.map.values():
+            if n.parent is not None:
+                n.parent.children.append(n)
 
-        # --- 7) Publish results
-        self.map = nodes
-        self.entry = nodes[entry_id]
-    #def build(self):
-    #    if len(self.cfg.blocks) <= 0:
-    #        return
-    #    map: dict[int, Block] = {}
-    #    self.entry.block_ref = self.cfg.blocks[0]
-    #    for block in self.cfg.blocks:
-    #        map[block.id] = block
-
-    #    self.map = {self.entry.block_ref.id: self.entry}
-
-    #    def get_dominator(block:Block):
-    #        if len(block.preds) == 1:
-    #            p = block.preds[0]
-    #            if p.id == block.id:
-    #                return None
-    #            dom_node = self.map.get(p.id)
-    #            if not dom_node:
-    #                dom_node = DominatorNode(p)
-    #                self.map[p.id] = dom_node
-    #            return dom_node
-    #        elif len(block.preds) == 0:
-    #            return None
-    #        else:
-    #            dominators: list[DominatorNode] = []
-
-    #            for pred in block.preds:
-    #                same = None
-    #                for succ in block.term.succ:
-    #                    if pred.id == succ.id:
-    #                        same = pred
-    #                        break
-    #                if same is not None:
-    #                    continue
-    #                dominator = get_dominator(pred)
-    #                #assert dominator is not None
-    #                if dominator is None:
-    #                    assert self.entry.block_ref is not None
-    #                    return self.map[self.entry.block_ref.id]
-    #                dominators.append(dominator)
-
-    #            while True:
-    #                prev = None
-    #                same = True
-    #                for dom in dominators:
-    #                    if prev is None:
-    #                        prev = dom
-    #                        continue
-    #                    if prev != dom:
-    #                        same = False
-    #                        break
-    #                if same and len(dominators) > 0:
-    #                    return dominators[0]
-    #                elif same:
-    #                    return None
-    #                else:
-    #                    new_doms: list[DominatorNode] = []
-    #                    for dom in dominators:
-    #                        if dom.parent is None:
-    #                            continue
-    #                        new_doms.append(dom.parent)
-    #                    dominators = new_doms
-
-    #    def compute_node(block: Block):
-    #        node = DominatorNode(block)
-    #        dominator = get_dominator(block)
-    #        if dominator is not None:
-    #            dominator.children.append(node)
-    #        node.parent = dominator
-    #        self.map[block.id] = node
-    #        return node
-
-    #    visited: set[int] = set()
-    #    def compute_tree(current_node: Block):
-    #        root = compute_node(current_node)
-    #        visited.add(current_node.id)
-    #        for succ in current_node.term.succ:
-    #            if succ.id in visited:
-    #                continue
-    #            _ = compute_tree(succ)
-    #        return root
-
-    #    self.entry = compute_tree(self.entry.block_ref)
 
     def print_node(self,node: DominatorNode):
         assert node.block_ref is not None
@@ -831,7 +734,7 @@ fn test() {
     return a;
 }
 let a = 1+1;
-test();
+//test();
 a = 2;
 print(a+1);
 while true {
@@ -880,4 +783,5 @@ if (a == 2) {
     print()
     for (tree, cfg) in zip(mir.dom_trees, mir.cfgs):
         print(f"NEW FUNCTION: {cfg.fn.sym.name}")
+        assert tree.entry is not None
         tree.print_tree(tree.entry)
