@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hmac import new
 from typing import override
 
 from .tokenizer import Token, TokenType
@@ -65,32 +66,36 @@ class Halt(TermStmt):
     succ: list["Block"]
 
 class Place:
-    pass
+    id: int
+    def __init__(self, id: int) -> None:
+        self.id = id
+
+    @override
+    def __repr__(self) -> str:
+        assert False
 
 
 class Local(Place):
-    id: int
     sym: Symbol
 
     def __init__(self, id: int, sym: Symbol):
-        self.id = id
+        super().__init__(id)
         self.sym = sym
 
     @override
     def __repr__(self) -> str:
-        return f"Local({self.sym.name}{self.sym.symbol_id})"
+        return f"Local({self.sym.name}{self.id})"
 
 class Global(Place):
-    id: int
     sym: Symbol
 
     def __init__(self, id: int, sym: Symbol):
-        self.id = id
+        super().__init__(id)
         self.sym = sym
 
     @override
     def __repr__(self) -> str:
-        return f"Global({self.sym.name}{self.sym.symbol_id})"
+        return f"Global({self.sym.name}{self.id})"
 
 
 class RValue:
@@ -109,10 +114,8 @@ class Const(RValue):
 
 
 class Temp(Place):
-    id: int
-
     def __init__(self, id: int):
-        self.id = id
+        super().__init__(id)
 
     @override
     def __repr__(self) -> str:
@@ -203,7 +206,7 @@ class Return(MStmt):
 
 @dataclass(frozen=True)
 class Phi(RValue):
-    incoming: list[tuple[int, Operand]] # (pred_block_id, value)
+    incoming: list[tuple[int, Operand | RValue]] # (pred_block_id, value)
 
 
 class Block:
@@ -646,6 +649,68 @@ class DomTreeBuilder:
             self.print_tree(child)
 
 
+class PhiBlock:
+    id: int
+    stmts: list[MStmt]
+    term: TermStmt
+    preds: list["Block"]
+    phis: dict[int, Phi]
+
+    def __init__(self, id: int) -> None:
+        self.id = id
+        self.stmts = []
+        self.term = Halt([])
+        self.preds = []
+        self.phis = {}
+
+    @override
+    def __repr__(self) -> str:
+        return f"Block({self.id})"
+
+class SSANamer:
+    df: dict[int, set[Block]]
+    cfg: CFGBuilder
+    vars: dict[int, list[Place]]
+    var_counter: int
+
+    def __init__(self, df: dict[int, set[Block]], cfg: CFGBuilder) -> None:
+        self.df = df
+        self.cfg = cfg
+        self.vars = {}
+        self.var_counter = 0
+
+    def run(self):
+        map: dict[int, int] = {}
+        new_blocks: list[PhiBlock] = []
+        for idx, block in enumerate(self.cfg.blocks):
+            new_block = PhiBlock(block.id)
+            new_block.preds = block.preds
+            new_block.term = block.term
+            new_blocks.append(new_block)
+            map[block.id] = idx
+        for block in self.cfg.blocks:
+            for stmt in block.stmts:
+                if isinstance(stmt, Assign):
+                    stmt.lval.id = self.var_counter
+                    new_assign = Assign(stmt.lval, stmt.rval)
+                    self.var_counter += 1
+                    new_blocks[map[block.id]].stmts.append(new_assign)
+                    phi = new_blocks[map[block.id]].phis.get(new_assign.lval.id)
+                    if not phi:
+                        new_blocks[map[block.id]].phis[new_assign.lval.id] = Phi([])
+                    new_blocks[map[block.id]].phis[new_assign.lval.id].incoming.append((block.id, new_assign.rval))
+
+                else: 
+                    new_blocks[map[block.id]].stmts.append(stmt)
+
+            for stmt in new_blocks[map[block.id]].stmts:
+                print(stmt)
+            print("PHIS")
+            for (id, phi) in new_blocks[map[block.id]].phis.items():
+                print(f"PHI: {id}")
+                for (block, v) in phi.incoming:
+                    print(f"BLOCK: {block} -- VALUE: {v}")
+
 
 class Mir:
     program: BoundProgram
@@ -654,6 +719,7 @@ class Mir:
     cfgs: list[CFGBuilder]
     dom_trees: list[DomTreeBuilder]
     context: MIRContext
+    DFs: list[dict[int, set[Block]]] = []
 
     def __init__(self, bound_program: BoundProgram, debug: bool = False) -> None:
         self.program = bound_program
@@ -700,23 +766,18 @@ class Mir:
                     if len(next_preds) == 0:
                         break
                     current_preds = next_preds
-            print()
-            print("JOIN:", len(df_map))
-            for (id, items) in df_map.items():
-                tmp = f"DF={id}, ["
-                for item in items:
-                    tmp += str(item.id) + ", "
-                if len(items) > 0:
-                    tmp = tmp[0:-2]
-                tmp += "]"
-                print(tmp)
-            print()
+            self.DFs.append(df_map)
 
+    def rename(self):
+        for (cfg, df) in zip(self.cfgs, self.DFs):
+            namer = SSANamer(df=df, cfg=cfg)
+            namer.run()
 
     def lower(self):
         self.build_cfg()
         self.build_trees()
         self.compute_dominator_frontiers()
+        self.rename()
 
 
 if __name__ == "__main__":
@@ -734,7 +795,9 @@ fn test() {
     return a;
 }
 let a = 1+1;
-//test();
+let b = 2+2;
+let c = 4+2;
+test();
 a = 2;
 print(a+1);
 while true {
@@ -781,7 +844,21 @@ if (a == 2) {
     print()
     print()
     print()
-    for (tree, cfg) in zip(mir.dom_trees, mir.cfgs):
+    for idx, (tree, cfg) in enumerate(zip(mir.dom_trees, mir.cfgs)):
         print(f"NEW FUNCTION: {cfg.fn.sym.name}")
         assert tree.entry is not None
         tree.print_tree(tree.entry)
+
+        print("=================")
+        df_map = mir.DFs[idx]
+        print("JOIN:", len(df_map))
+        for (id, items) in df_map.items():
+            tmp = f"DF={id}, ["
+            for item in items:
+                tmp += str(item.id) + ", "
+            if len(items) > 0:
+                tmp = tmp[0:-2]
+            tmp += "]"
+            print(tmp)
+        print("=================")
+        print()
