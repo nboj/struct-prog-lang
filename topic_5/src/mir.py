@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from hmac import new
 from typing import override
@@ -204,9 +205,14 @@ class Return(MStmt):
 
 
 
-@dataclass(frozen=True)
 class Phi(RValue):
-    incoming: list[tuple[int, Operand | RValue]] # (pred_block_id, value)
+    incoming: list[int] # (pred_block_id, value)
+    def __init__(self, incoming: list[int]) -> None:
+        self.incoming = incoming
+
+    @override
+    def __repr__(self) -> str:
+        return f"{self.incoming}"
 
 
 class Block:
@@ -649,12 +655,23 @@ class DomTreeBuilder:
             self.print_tree(child)
 
 
+class PhiAssign(MStmt):
+    id: int
+    phi: Phi
+    def __init__(self, id: int, phi: Phi):
+        self.phi = phi
+        self.id = id
+
+    @override
+    def __repr__(self):
+        return f"φ{self.id} = {self.phi}"
+
 class PhiBlock:
     id: int
     stmts: list[MStmt]
     term: TermStmt
     preds: list["Block"]
-    phis: dict[int, Phi]
+    phis: dict[int, PhiAssign]
 
     def __init__(self, id: int) -> None:
         self.id = id
@@ -670,46 +687,198 @@ class PhiBlock:
 class SSANamer:
     df: dict[int, set[Block]]
     cfg: CFGBuilder
-    vars: dict[int, list[Place]]
+    vars: dict[int, list[int]]
     var_counter: int
+    def_blocks: dict[int, set[PhiBlock]]
 
     def __init__(self, df: dict[int, set[Block]], cfg: CFGBuilder) -> None:
         self.df = df
         self.cfg = cfg
-        self.vars = {}
+        self.vars = defaultdict(list)
         self.var_counter = 0
+        self.def_blocks = defaultdict(set)
+
+    def new_name(self):
+        new = self.var_counter
+        self.var_counter += 1
+        return new
+
+    def rename_operand(self, operand: Operand):
+        match operand:
+            case Const():
+                return operand
+            case Copy(origin=origin):
+                return Copy(self.rename_place(origin))
+            case Move(origin=origin):
+                raise AssertionError("move ops are not implemented yet")
+
+    def rename_rval(self, rval: RValue | Operand) -> RValue | Operand:
+        match rval:
+            case Const():
+                return self.rename_operand(rval)
+            case Copy():
+                return self.rename_operand(rval)
+            case Move():
+                return self.rename_operand(rval)
+            case BinOp(op=op, lhs=lhs, rhs=rhs):
+                return BinOp(op=op, lhs=self.rename_operand(lhs), rhs=self.rename_operand(rhs))
+            case Call(callee, args):
+                new_args: list[Operand] = []
+                for arg in args:
+                    new_args.append(self.rename_operand(arg))
+                new_callee = None
+                match callee:
+                    case DirectFunc():
+                        new_callee = callee
+                    case IndirectFunc(operand=operand, func_type=func_type):
+                        new_callee = IndirectFunc(self.rename_operand(operand), func_type=func_type)
+                return Call(new_callee, new_args)
+            case _:
+                raise AssertionError(f"unhandled rval type: {type(rval)}")
+
+    def topvar(self, id: int):
+        assert len(self.vars[id]) > 0
+        return self.vars[id][-1]
+
+    def rename_place(self, place: Place) -> Place:
+        match place:
+            case Temp(id=id):
+                return Temp(self.topvar(id))
+            case Global(id=id, sym=sym):
+                return Global(self.topvar(sym.symbol_id), sym)
+            case Local(id=id, sym=sym):
+                return Local(self.topvar(sym.symbol_id), sym)
+            case _:
+                raise AssertionError(f"unhandled place type in renamer: {type(place)}")
+
+    def define_place(self, place: Place) -> Place:
+        match place:
+            case Temp(id=id):
+                self.vars[id].append(len(self.vars[id]))
+                return Temp(len(self.vars[id])-1)
+            case Global(id=id, sym=sym):
+                self.vars[sym.symbol_id].append(len(self.vars[sym.symbol_id]))
+                return Global(len(self.vars[sym.symbol_id])-1, sym)
+            case Local(id=id, sym=sym):
+                self.vars[sym.symbol_id].append(len(self.vars[sym.symbol_id]))
+                return Local(len(self.vars[sym.symbol_id])-1, sym)
+            case _:
+                raise AssertionError(f"unhandled place type in renamer: {type(place)}")
+
+    def rename_stmt(self, stmt: MStmt):
+        match stmt:
+            case Assign(lval=lval, rval=rval):
+                new_rval = self.rename_rval(rval)
+                new_lval = self.define_place(lval)
+                return Assign(new_lval, new_rval)
+            case Return(val=val):
+                new_val = self.rename_rval(val)
+                return Return(new_val)
+            case _:
+                raise AssertionError(f"unhandled stmt kind in ssa renaming: {type(stmt)}")
+
+
+    def var_key_from_place(self, place: Place) -> int:
+        match place:
+            case Temp(id=id):
+                return id
+            case Global(id=_, sym=sym):
+                return sym.symbol_id
+            case Local(id=_, sym=sym):
+                return sym.symbol_id
+            case _:
+                raise AssertionError(f"unhandled place: {type(place)}")
+
+
+    def nearest_def_block_id(self, start_block:Block, var_key: int, defines_map: dict[int, set[int]]) -> int | None:
+        """Walk backward from start_block through preds until we hit a block that defines var_key.
+           Return that block id, or None if no definition is found."""
+        stack = [start_block]
+        visited: set[int] = set()
+        while stack:
+            b = stack.pop()
+            if b.id in defines_map[var_key]:
+                return b.id
+            if b.id in visited:
+                continue
+            visited.add(b.id)
+            for p in b.preds:
+                stack.append(p)
+        return None
 
     def run(self):
+        print("<<<<<<<<RENAMING>>>>>>>>")
         map: dict[int, int] = {}
-        new_blocks: list[PhiBlock] = []
+        blocks: list[PhiBlock] = []
+        block_defines_var: dict[int, set[int]] = defaultdict(set)
         for idx, block in enumerate(self.cfg.blocks):
             new_block = PhiBlock(block.id)
             new_block.preds = block.preds
             new_block.term = block.term
-            new_blocks.append(new_block)
+            new_block.stmts = block.stmts
+            for stmt in new_block.stmts:
+                match stmt:
+                    case Assign(lval=lval, rval=rval):
+                        k = self.var_key_from_place(lval)
+                        self.def_blocks[k].add(new_block)
+                        block_defines_var[k].add(new_block.id)
+                    case _:
+                        pass
             map[block.id] = idx
-        for block in self.cfg.blocks:
+            blocks.append(new_block)
+        self.def_blocks = defaultdict(set, {k: v for (k, v) in self.def_blocks.items() if len({b.id for b in v}) >= 2})
+        block_defines_var = defaultdict(set, {k: v for (k, v) in block_defines_var.items() if len(v) >= 2})
+        hasphi: dict[int, set[int]] = defaultdict(set)                 # var -> {join_id}
+        phi_sources: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+
+        for var, defsites in self.def_blocks.items():
+            for d in defsites:
+                source = d.id
+                stack = [d] 
+                visited: set[int] = set()
+
+                while stack:
+                    b = stack.pop()
+                    for y in self.df.get(b.id, ()):
+                        j_id = y.id
+                        j_idx = map[j_id]
+
+                        if j_id not in hasphi[var]:
+                            blocks[j_idx].phis[var] = blocks[j_idx].phis.get(var, PhiAssign(var, Phi([])))
+                            hasphi[var].add(j_id)
+                        if j_id not in visited:
+                            phi_sources[var][j_id].add(source)
+
+                        if j_id not in block_defines_var[var] and j_id not in visited:
+                            visited.add(j_id)
+                            stack.append(blocks[j_idx])
+
+        for block in blocks:
+            if not block.phis:
+                continue
+            for var_key, phi_assign in block.phis.items():
+                srcs: set[int] = set()
+                for pred in block.preds:
+                    src = self.nearest_def_block_id(pred, var_key, block_defines_var)
+                    if src is not None:
+                        srcs.add(src)
+                phi_assign.phi.incoming = sorted(srcs)
+
+        for block in blocks:
+            new_stmts: list[MStmt] = []
             for stmt in block.stmts:
-                if isinstance(stmt, Assign):
-                    stmt.lval.id = self.var_counter
-                    new_assign = Assign(stmt.lval, stmt.rval)
-                    self.var_counter += 1
-                    new_blocks[map[block.id]].stmts.append(new_assign)
-                    phi = new_blocks[map[block.id]].phis.get(new_assign.lval.id)
-                    if not phi:
-                        new_blocks[map[block.id]].phis[new_assign.lval.id] = Phi([])
-                    new_blocks[map[block.id]].phis[new_assign.lval.id].incoming.append((block.id, new_assign.rval))
+                new_stmts.append(self.rename_stmt(stmt))
+            block.stmts = new_stmts
 
-                else: 
-                    new_blocks[map[block.id]].stmts.append(stmt)
-
-            for stmt in new_blocks[map[block.id]].stmts:
+        for block in blocks:
+            for stmt in block.stmts:
                 print(stmt)
-            print("PHIS")
-            for (id, phi) in new_blocks[map[block.id]].phis.items():
-                print(f"PHI: {id}")
-                for (block, v) in phi.incoming:
-                    print(f"BLOCK: {block} -- VALUE: {v}")
+        print("===PHIS===")
+        for block in blocks:
+            for (id, assign) in block.phis.items():
+                print(assign)
+        print("===END PHIS===")
+        print("<<<<<<<<RENAMING FINISHED>>>>>>>>")
 
 
 class Mir:
@@ -786,6 +955,9 @@ if __name__ == "__main__":
     from .binder import Binder
 
     text = """
+let a = 1+1;
+let b = 2+2;
+let c = 4+2;
 fn test() {
     print("test");
     let a = 0;
@@ -794,9 +966,6 @@ fn test() {
     }
     return a;
 }
-let a = 1+1;
-let b = 2+2;
-let c = 4+2;
 test();
 a = 2;
 print(a+1);
@@ -806,8 +975,10 @@ while true {
 if (a == 2) {
     print("true");
     if (a ==2) {
+        a = 1;
         print("true");
     } else {
+        a = 2;
         print("false");
     }
 } else {
