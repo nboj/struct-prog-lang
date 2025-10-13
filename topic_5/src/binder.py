@@ -198,7 +198,7 @@ class Binder:
         sym = None
         if type:
             sym = Symbol(self.var_count, name, type)
-        elif self.in_function() and self.lookup(name) is None:
+        elif self.in_function():
             sym = Symbol(self.var_count, name, SymbolType.Local)
             if name != "module_init":
                 fn = self.get_current_function()

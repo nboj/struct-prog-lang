@@ -1,7 +1,7 @@
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
-from hmac import new
-from typing import override
+from typing import Literal, override
 
 from .tokenizer import Token, TokenType
 from .types import NIL, Nil, Op, Symbol, SymbolType, op_str
@@ -9,7 +9,9 @@ from .binder import (
     BoundAssign,
     BoundAugAssign,
     BoundBinary,
+    BoundBreakStmt,
     BoundCallExpr,
+    BoundContinueStmt,
     BoundExpr,
     BoundExprStmt,
     BoundFunction,
@@ -19,10 +21,12 @@ from .binder import (
     BoundProgram,
     BoundReturnStmt,
     BoundStmt,
+    BoundUnary,
     BoundVariable,
     BoundWhileStmt,
 )
 
+type VarKey = tuple[Literal["g", "l", "t"], int]
 
 class MStmt:
     pass
@@ -157,6 +161,18 @@ class BinOp(RValue):
     def __repr__(self) -> str:
         return f"{op_str(self.op)} {self.lhs}, {self.rhs}"
 
+class UnaryOp(RValue):
+    op: Op
+    val: Operand
+
+    def __init__(self, op: Op, val: Operand):
+        self.op = op
+        self.val = val
+
+    @override
+    def __repr__(self) -> str:
+        return f"{op_str(self.op)} {self.val}"
+
 
 class DirectFunc:
     sym: Symbol
@@ -193,10 +209,11 @@ class Assign(MStmt):
     def __repr__(self):
         return f"{self.lval} = {self.rval}"
 
-class Return(MStmt):
+class Return(TermStmt):
     val: Operand | RValue
 
     def __init__(self, val: Operand | RValue) -> None:
+        super().__init__([])
         self.val = val
 
     @override
@@ -214,18 +231,30 @@ class Phi(RValue):
     def __repr__(self) -> str:
         return f"{self.incoming}"
 
+class PhiAssign(MStmt):
+    lval: Place
+    phi: Phi
+    def __init__(self, lval: Place, phi: Phi):
+        self.phi = phi
+        self.lval = lval
+
+    @override
+    def __repr__(self):
+        return f"{self.lval} = φ{self.phi}"
 
 class Block:
     id: int
     stmts: list[MStmt]
     term: TermStmt
     preds: list["Block"]
+    phis: dict[VarKey, PhiAssign]
 
     def __init__(self, id: int) -> None:
         self.id = id
         self.stmts = []
         self.term = Halt([])
         self.preds = []
+        self.phis = {}
 
     @override
     def __repr__(self) -> str:
@@ -239,6 +268,7 @@ class CFGBuilder:
     locals: dict[int, Local]
     blocks: list[Block]
     mir_context: "MIRContext"
+    loop_stack: list[tuple[Block, Block]]
 
     def __init__(self, fn: BoundFunction, mir_context: "MIRContext") -> None:
         self.tmp_counter = 0
@@ -248,6 +278,7 @@ class CFGBuilder:
         self.local_counter = len(self.locals)
         self.blocks = []
         self.mir_context = mir_context
+        self.loop_stack = []
 
     def ensure_local(self, sym: Symbol):
         if sym.sym_type == SymbolType.Global:
@@ -264,7 +295,7 @@ class CFGBuilder:
 
     def get_local(self, sym: Symbol):
         if sym.sym_type == SymbolType.Global:
-            return self.mir_context.get_global(sym)
+            return self.mir_context.ensure_global(sym)
         elif sym.sym_type == SymbolType.Local:
             local = self.locals[sym.symbol_id]
             assert local is not None, "Local was none in get local"
@@ -313,10 +344,13 @@ class CFGBuilder:
                 return Op.LT
             case TokenType.Gt:
                 return Op.GT
+            case TokenType.Mod:
+                return Op.MOD
             case _:
                 raise AssertionError(
                     "Unhandeled TokenType in binary expression mir"
                 )
+
     def lower_logical(self, expr: BoundBinary) -> Temp:
         match expr.op.kind:
             case TokenType.DoubleAmp:
@@ -332,8 +366,9 @@ class CFGBuilder:
                 self.current_block().term = Goto(block_id=join_block.id, succ=[join_block])
                 self.blocks.append(join_block)
                 tmp = self.new_temp()
-                phi = Phi([(true_block.id, rhs), (false_block.id, Const(False))])
-                self.emit(Assign(tmp, phi))
+                phi = Phi([true_block.id, false_block.id])
+                #self.emit(Assign(tmp, phi))
+                self.current_block().phis[("t",tmp.id)] = PhiAssign(tmp, phi)
                 return tmp
             case TokenType.DoublePipe:
                 assert False
@@ -408,6 +443,19 @@ class CFGBuilder:
             rval = self.lower_expression(expr.value)
             self.emit(Assign(lval, rval))
             return Const(NIL)
+        elif isinstance(expr, BoundUnary):
+            op = None
+            match expr.op.kind:
+                case TokenType.Minus:
+                    op = Op.NEG
+                case TokenType.Bang:
+                    op = Op.BANG
+                case _:
+                    raise AssertionError(f"unhandled op kind in unary: {expr.op.kind}")
+                    
+
+            val = self.lower_to_operand(expr.expr)
+            return UnaryOp(op, val)
         else:
             raise AssertionError(
                 f"Unhandeled expr type in mir lower_expression {type(expr)}"
@@ -433,7 +481,7 @@ class CFGBuilder:
                 val = self.lower_expression(stmt.expr)
             else:
                 val = Const(NIL)
-            self.emit(Return(val))
+            self.current_block().term = Return(val)
         elif isinstance(stmt, BoundExprStmt):
             if isinstance(stmt.expr, BoundAugAssign):
                 value = None
@@ -462,11 +510,14 @@ class CFGBuilder:
             self.blocks.append(true_block)
             for s in stmt.then_block.stmts:
                 self.lower_stmt(s)
-            self.current_block().term = Goto(block_id=exit_block.id, succ=[exit_block])
+
+            if isinstance(self.current_block().term, Halt):
+                self.current_block().term = Goto(block_id=exit_block.id, succ=[exit_block])
             self.blocks.append(false_block)
             for s in stmt.else_block.stmts:
                 self.lower_stmt(s)
-            self.current_block().term = Goto(block_id=exit_block.id, succ=[exit_block])
+            if isinstance(self.current_block().term, Halt):
+                self.current_block().term = Goto(block_id=exit_block.id, succ=[exit_block])
             self.blocks.append(exit_block)
         elif isinstance(stmt, BoundWhileStmt):
             head_block = self.new_block()
@@ -477,10 +528,19 @@ class CFGBuilder:
             condition = self.lower_to_operand(stmt.condition)
             self.current_block().term = Branch(succ=[body_block, exit_block], condition=condition, true_block_id=body_block.id, false_block_id=exit_block.id)
             self.blocks.append(body_block)
+            self.loop_stack.append((head_block, exit_block))
             for s in stmt.block.stmts:
                 self.lower_stmt(s)
-            self.current_block().term = Goto(succ=[head_block], block_id=head_block.id)
+            _ = self.loop_stack.pop()
+            if isinstance(self.current_block().term, Halt):
+                self.current_block().term = Goto(succ=[head_block], block_id=head_block.id)
             self.blocks.append(exit_block)
+        elif isinstance(stmt, BoundBreakStmt):
+            assert len(self.loop_stack) > 0
+            self.current_block().term = Goto(self.loop_stack[-1][1].id, succ=[self.loop_stack[-1][1]])
+        elif isinstance(stmt, BoundContinueStmt):
+            assert len(self.loop_stack) > 0
+            self.current_block().term = Goto(self.loop_stack[-1][0].id, succ=[self.loop_stack[-1][0]])
         else:
             raise AssertionError(f"Unhandeled expr type in lowerstmt mir {type(stmt)}")
 
@@ -516,12 +576,6 @@ class MIRContext:
             return local
         assert(False), "Invalid symbol type for a global local"
 
-    def get_global(self, sym: Symbol):
-        if sym.sym_type == SymbolType.Global:
-            local = self.globals[sym.symbol_id]
-            assert local is not None, "Local was none in get local"
-            return local
-        assert(False), "Invalid symbol type for a global local"
 
 
 class DominatorNode:
@@ -655,53 +709,25 @@ class DomTreeBuilder:
             self.print_tree(child)
 
 
-class PhiAssign(MStmt):
-    id: int
-    phi: Phi
-    def __init__(self, id: int, phi: Phi):
-        self.phi = phi
-        self.id = id
-
-    @override
-    def __repr__(self):
-        return f"φ{self.id} = {self.phi}"
-
-class PhiBlock:
-    id: int
-    stmts: list[MStmt]
-    term: TermStmt
-    preds: list["Block"]
-    phis: dict[int, PhiAssign]
-
-    def __init__(self, id: int) -> None:
-        self.id = id
-        self.stmts = []
-        self.term = Halt([])
-        self.preds = []
-        self.phis = {}
-
-    @override
-    def __repr__(self) -> str:
-        return f"Block({self.id})"
-
 class SSANamer:
     df: dict[int, set[Block]]
     cfg: CFGBuilder
-    vars: dict[int, list[int]]
+    vars: dict[VarKey, list[int]]
+    temp_counter: int
+    def_blocks: dict[VarKey, set[Block]]
+    var_info: dict[VarKey, Place]
+    tree: DomTreeBuilder
     var_counter: int
-    def_blocks: dict[int, set[PhiBlock]]
 
-    def __init__(self, df: dict[int, set[Block]], cfg: CFGBuilder) -> None:
+    def __init__(self, df: dict[int, set[Block]], cfg: CFGBuilder, tree: DomTreeBuilder) -> None:
         self.df = df
         self.cfg = cfg
         self.vars = defaultdict(list)
-        self.var_counter = 0
         self.def_blocks = defaultdict(set)
-
-    def new_name(self):
-        new = self.var_counter
-        self.var_counter += 1
-        return new
+        self.var_counter = 0
+        self.temp_counter = 0
+        self.var_info = {}
+        self.tree = tree
 
     def rename_operand(self, operand: Operand):
         match operand:
@@ -722,6 +748,8 @@ class SSANamer:
                 return self.rename_operand(rval)
             case BinOp(op=op, lhs=lhs, rhs=rhs):
                 return BinOp(op=op, lhs=self.rename_operand(lhs), rhs=self.rename_operand(rhs))
+            case UnaryOp(op=op, val=val):
+                return UnaryOp(op=op, val=self.rename_operand(val))
             case Call(callee, args):
                 new_args: list[Operand] = []
                 for arg in args:
@@ -736,32 +764,39 @@ class SSANamer:
             case _:
                 raise AssertionError(f"unhandled rval type: {type(rval)}")
 
-    def topvar(self, id: int):
+    def topvar(self, id: VarKey):
+        if len(self.vars[id]) <= 0 and id[0] == "g":
+            self.vars[id].append(0)
         assert len(self.vars[id]) > 0
         return self.vars[id][-1]
 
     def rename_place(self, place: Place) -> Place:
+        key = self.var_key_from_place(place)
         match place:
             case Temp(id=id):
-                return Temp(self.topvar(id))
+                return Temp(self.topvar(key))
             case Global(id=id, sym=sym):
-                return Global(self.topvar(sym.symbol_id), sym)
+                return Global(self.topvar(key), sym)
             case Local(id=id, sym=sym):
-                return Local(self.topvar(sym.symbol_id), sym)
+                return Local(self.topvar(key), sym)
             case _:
                 raise AssertionError(f"unhandled place type in renamer: {type(place)}")
 
     def define_place(self, place: Place) -> Place:
+        key = self.var_key_from_place(place)
         match place:
             case Temp(id=id):
-                self.vars[id].append(len(self.vars[id]))
-                return Temp(len(self.vars[id])-1)
+                self.vars[key].append(self.temp_counter)
+                self.temp_counter += 1
+                return Temp(self.vars[key][len(self.vars[key])-1])
             case Global(id=id, sym=sym):
-                self.vars[sym.symbol_id].append(len(self.vars[sym.symbol_id]))
-                return Global(len(self.vars[sym.symbol_id])-1, sym)
+                self.vars[key].append(self.var_counter)
+                self.var_counter += 1
+                return Global(self.vars[key][-1], sym)
             case Local(id=id, sym=sym):
-                self.vars[sym.symbol_id].append(len(self.vars[sym.symbol_id]))
-                return Local(len(self.vars[sym.symbol_id])-1, sym)
+                self.vars[key].append(self.var_counter)
+                self.var_counter += 1
+                return Local(self.vars[key][-1], sym)
             case _:
                 raise AssertionError(f"unhandled place type in renamer: {type(place)}")
 
@@ -771,21 +806,18 @@ class SSANamer:
                 new_rval = self.rename_rval(rval)
                 new_lval = self.define_place(lval)
                 return Assign(new_lval, new_rval)
-            case Return(val=val):
-                new_val = self.rename_rval(val)
-                return Return(new_val)
             case _:
                 raise AssertionError(f"unhandled stmt kind in ssa renaming: {type(stmt)}")
 
 
-    def var_key_from_place(self, place: Place) -> int:
+    def var_key_from_place(self, place: Place) -> VarKey:
         match place:
             case Temp(id=id):
-                return id
+                return ("t", id)
             case Global(id=_, sym=sym):
-                return sym.symbol_id
+                return ("g", sym.symbol_id)
             case Local(id=_, sym=sym):
-                return sym.symbol_id
+                return ("l", sym.symbol_id)
             case _:
                 raise AssertionError(f"unhandled place: {type(place)}")
 
@@ -806,30 +838,44 @@ class SSANamer:
                 stack.append(p)
         return None
 
+    def rename_term(self, term: TermStmt) -> TermStmt:
+        match term:
+            case Return(val=val):
+                return Return(self.rename_rval(val))
+            case Goto():
+                return term
+            case Branch(condition=condition, true_block_id=true_block_id, false_block_id=false_block_id, succ=succ):
+                return Branch(self.rename_operand(condition), true_block_id=true_block_id, false_block_id=false_block_id, succ=succ)
+            case Halt():
+                return term
+            case _:
+                raise AssertionError(f"unhandled term type when renaming: {type(term)}")
+
+    def rename_phi(self, phi: PhiAssign) -> PhiAssign:
+        lval = self.define_place(phi.lval)
+        return PhiAssign(lval, phi.phi)
+
     def run(self):
         print("<<<<<<<<RENAMING>>>>>>>>")
         map: dict[int, int] = {}
-        blocks: list[PhiBlock] = []
-        block_defines_var: dict[int, set[int]] = defaultdict(set)
+        blocks: list[Block] = []
+        block_defines_var: dict[VarKey, set[int]] = defaultdict(set)
         for idx, block in enumerate(self.cfg.blocks):
-            new_block = PhiBlock(block.id)
-            new_block.preds = block.preds
-            new_block.term = block.term
-            new_block.stmts = block.stmts
-            for stmt in new_block.stmts:
+            for stmt in block.stmts:
                 match stmt:
                     case Assign(lval=lval, rval=rval):
                         k = self.var_key_from_place(lval)
-                        self.def_blocks[k].add(new_block)
-                        block_defines_var[k].add(new_block.id)
+                        self.var_info[k] = lval
+                        self.def_blocks[k].add(block)
+                        block_defines_var[k].add(block.id)
                     case _:
                         pass
             map[block.id] = idx
-            blocks.append(new_block)
+            blocks.append(block)
         self.def_blocks = defaultdict(set, {k: v for (k, v) in self.def_blocks.items() if len({b.id for b in v}) >= 2})
         block_defines_var = defaultdict(set, {k: v for (k, v) in block_defines_var.items() if len(v) >= 2})
-        hasphi: dict[int, set[int]] = defaultdict(set)                 # var -> {join_id}
-        phi_sources: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+        hasphi: dict[VarKey, set[int]] = defaultdict(set)                 # var -> {join_id}
+        phi_sources: dict[VarKey, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
 
         for var, defsites in self.def_blocks.items():
             for d in defsites:
@@ -844,7 +890,18 @@ class SSANamer:
                         j_idx = map[j_id]
 
                         if j_id not in hasphi[var]:
-                            blocks[j_idx].phis[var] = blocks[j_idx].phis.get(var, PhiAssign(var, Phi([])))
+                            proto = self.var_info[var]
+                            match proto:
+                                case Global(id=_, sym=sym):
+                                    dest = Global(0, sym)
+                                case Local(id=_, sym=sym):
+                                    dest = Local(0, sym)
+                                case Temp(id=id):
+                                    dest = Temp(id)
+                                case _:
+                                    raise AssertionError("unexpected place proto")
+
+                            blocks[j_idx].phis[var] = PhiAssign(dest, Phi([]))
                             hasphi[var].add(j_id)
                         if j_id not in visited:
                             phi_sources[var][j_id].add(source)
@@ -854,31 +911,193 @@ class SSANamer:
                             stack.append(blocks[j_idx])
 
         for block in blocks:
-            if not block.phis:
-                continue
-            for var_key, phi_assign in block.phis.items():
-                srcs: set[int] = set()
-                for pred in block.preds:
-                    src = self.nearest_def_block_id(pred, var_key, block_defines_var)
-                    if src is not None:
-                        srcs.add(src)
-                phi_assign.phi.incoming = sorted(srcs)
+            for succ in block.term.succ:
+                for phi in succ.phis.values():
+                    phi.phi.incoming.append(block.id)
 
-        for block in blocks:
+
+        entry = self.tree.entry
+        assert entry is not None
+        def rename(entry: DominatorNode):
             new_stmts: list[MStmt] = []
+            new_phis: dict[VarKey, PhiAssign] = {}
+            block = entry.block_ref
+            for phi in block.phis.values():
+                new_phis[self.var_key_from_place(phi.lval)] = self.rename_phi(phi)
+
             for stmt in block.stmts:
                 new_stmts.append(self.rename_stmt(stmt))
+            block.phis = new_phis
             block.stmts = new_stmts
+            block.term = self.rename_term(block.term)
+            vars_copy = deepcopy(self.vars)
+            for child in entry.children:
+                rename(child)
+                self.vars = deepcopy(vars_copy)
+            blocks[map[block.id]] = block
+        rename(entry)
+        #for block in blocks:
+        #    new_stmts: list[MStmt] = []
+        #    new_phis: dict[VarKey, PhiAssign] = {}
+        #    for phi in block.phis.values():
+        #        new_phis[self.var_key_from_place(phi.lval)] = self.rename_phi(phi)
+
+        #    for stmt in block.stmts:
+        #        new_stmts.append(self.rename_stmt(stmt))
+        #    block.phis = new_phis
+        #    block.stmts = new_stmts
+        #    block.term = self.rename_term(block.term)
 
         for block in blocks:
+            print()
+            print(block)
+            for (_id, phi) in block.phis.items():
+                print(phi)
             for stmt in block.stmts:
                 print(stmt)
+            print(block.term)
         print("===PHIS===")
         for block in blocks:
             for (id, assign) in block.phis.items():
                 print(assign)
         print("===END PHIS===")
+        print()
+        print()
+        print("===== REMOVING PHIS =====")
+
+
+
+        def global_rename_operand_use(old_lval: Global | Local, new_lval: Global | Local, operand: Operand) -> Operand:
+            match operand:
+                case Const():
+                    return operand
+                case Copy(origin=origin):
+                    match origin:
+                        case Global(id=id, sym=sym):
+                            if id == old_lval.id and sym == old_lval.sym:
+                                return Copy(new_lval)
+                            else:
+                                return operand
+                        case Local(id=id, sym=sym):
+                            if id == old_lval.id and sym == old_lval.sym:
+                                return Copy(new_lval)
+                            else:
+                                return operand
+                        case Temp(id=id):
+                            return operand
+                        case _:
+                            return operand
+
+                case Move(origin=origin):
+                    raise AssertionError("move ops are not implemented yet")
+
+        def global_rename_use(old_lval: Global | Local, new_lval: Global | Local, rval: RValue | Operand) -> RValue | Operand:
+            match rval:
+                case Const():
+                     return global_rename_operand_use(old_lval, new_lval, rval)
+                case Copy():
+                     return global_rename_operand_use(old_lval, new_lval, rval)
+                case Move():
+                     return global_rename_operand_use(old_lval, new_lval, rval)
+                case BinOp(op=op, lhs=lhs, rhs=rhs):
+                    return BinOp(op=op, lhs=global_rename_operand_use(old_lval, new_lval, lhs), rhs=global_rename_operand_use(old_lval, new_lval, rhs))
+                case UnaryOp(op=op, val=val):
+                    return UnaryOp(op=op, val=global_rename_operand_use(old_lval, new_lval, val))
+                case Call(callee, args):
+                    new_args: list[Operand] = []
+                    for arg in args:
+                        new_args.append(global_rename_operand_use(old_lval, new_lval, arg))
+                    new_callee = None
+                    match callee:
+                        case DirectFunc():
+                            new_callee = callee
+                        case IndirectFunc(operand=operand, func_type=func_type):
+                            new_callee = IndirectFunc(global_rename_operand_use(old_lval, new_lval, operand), func_type=func_type)
+                    return Call(new_callee, new_args)
+                case _:
+                    raise AssertionError(f"unhandled rval type: {type(rval)}")
+            
+
+
+        def global_rename_stmt(old_lval: Global | Local, new_lval: Global | Local, stmt: MStmt) -> MStmt:
+            match stmt:
+                case Assign(lval=lval, rval=rval):
+                    new_r = global_rename_use(old_lval, new_lval, rval)
+                    if old_lval == lval:
+                        return Assign(new_lval, new_r)
+                    else:
+                        return Assign(lval, new_r)
+
+                case _:
+                    raise AssertionError(f"unhandled stmt kind in ssa renaming: {type(stmt)}")
+
+        def global_rename_term(old_lval: Global | Local, new_lval: Global | Local, term: TermStmt) -> TermStmt:
+            match term:
+                case Return(val=val):
+                    return Return(global_rename_use(old_lval, new_lval, val))
+                case Goto():
+                    return term
+                case Branch(condition=condition, true_block_id=true_block_id, false_block_id=false_block_id, succ=succ):
+                    return Branch(global_rename_operand_use(old_lval, new_lval, condition), true_block_id=true_block_id, false_block_id=false_block_id, succ=succ)
+                case Halt():
+                    return term
+                case _:
+                    raise AssertionError(f"unhandled term type when renaming: {type(term)}")
+
+
+        for block in blocks:
+            if len(block.phis) > 0:
+                for (id, assign) in block.phis.items():
+                    phi_lval = assign.lval
+                    assert isinstance(phi_lval, (Global, Local))
+                    incoming = assign.phi.incoming
+                    visited: set[int] = set()
+                    while len(incoming) > 0:
+                        new_incomings = []
+                        for b in incoming:
+                            if b in visited:
+                                continue
+                            visited.add(b)
+                            found = False
+                            for idx, stmt in enumerate(reversed(blocks[map[b]].stmts)):
+                                match stmt:
+                                    case Assign(lval=lval, rval=rval):
+                                        match lval:
+                                            case Local(id=id,sym=sym):
+                                                pass
+                                            case Global(id=id,sym=sym):
+                                                pass
+                                            case _:
+                                                continue
+                                        if lval.sym == phi_lval.sym:
+                                            found = True
+                                            fwd_idx = len(blocks[map[b]].stmts) - 1 - idx
+                                            print(f"FOUND: {lval.sym.name}{lval.id}, REPLACE WITH:  {phi_lval.sym.name}{phi_lval.id}")
+                                            print(f"STMT: {blocks[map[b]].stmts[fwd_idx]}")
+                                            print(f"Starting with block: {map[b]+1}")
+                                            for _block in blocks:
+                                                _block.stmts = [global_rename_stmt(lval, phi_lval, s) for s in _block.stmts]
+                                                _block.term  = global_rename_term(lval, phi_lval, _block.term)
+                                            blocks[map[b]].stmts[fwd_idx] = Assign(phi_lval, global_rename_use(lval, phi_lval, rval))
+                                            break
+                                    case _:
+                                        pass
+                                pass
+                            if not found:
+                                new_incomings += [p.id for p in blocks[map[b]].preds]
+                        incoming = new_incomings
+                block.phis = {}
+
+        for block in blocks:
+            print()
+            print(block)
+            for (_id, phi) in block.phis.items():
+                print(phi)
+            for stmt in block.stmts:
+                print(stmt)
+            print(block.term)
         print("<<<<<<<<RENAMING FINISHED>>>>>>>>")
+        return blocks
 
 
 class Mir:
@@ -914,7 +1133,9 @@ class Mir:
         for tree in self.dom_trees:
             df_map: dict[int, set[Block]] = {}
             for block in tree.cfg.blocks:
-                dominator = tree.map[block.id]
+                dominator = tree.map.get(block.id)
+                if not dominator:
+                    raise AssertionError("unreachable code found when computing dominance frontiers")
                 if dominator.parent is None:
                     continue
                 parent = dominator.parent.block_ref
@@ -938,9 +1159,9 @@ class Mir:
             self.DFs.append(df_map)
 
     def rename(self):
-        for (cfg, df) in zip(self.cfgs, self.DFs):
-            namer = SSANamer(df=df, cfg=cfg)
-            namer.run()
+        for (cfg, df, tree) in zip(self.cfgs, self.DFs, self.dom_trees):
+            namer = SSANamer(df=df, cfg=cfg, tree=tree)
+            blocks = namer.run()
 
     def lower(self):
         self.build_cfg()
@@ -955,35 +1176,349 @@ if __name__ == "__main__":
     from .binder import Binder
 
     text = """
-let a = 1+1;
-let b = 2+2;
-let c = 4+2;
-fn test() {
-    print("test");
-    let a = 0;
-    while a < 10 {
-        a += 1;
-    }
-    return a;
-}
-test();
-a = 2;
-print(a+1);
-while true {
-
-}
-if (a == 2) {
-    print("true");
-    if (a ==2) {
-        a = 1;
-        print("true");
-    } else {
-        a = 2;
-        print("false");
-    }
-} else {
-    print("false");
-}
+let a = 0;
+let a = 2;
+print("test", a);
+//// ==============================
+//// Big SSA / φ / Liveness Testbed
+//// ==============================
+//
+//// ---- Globals used across tests ----
+//let p = true;
+//let q = true;
+//let r = true;
+//let s = true;
+//let t = true;
+//
+//let a = 0;
+//let b = 0;
+//let c = 0;
+//let d = 0;
+//let e = 0;
+//
+//let x = 0;
+//let y = 0;
+//let z = 0;
+//let w = 0;
+//let v = 0;
+//let u = 0;
+//
+//let n = 0;
+//let m = 0;
+//
+//let flag = false;
+//
+//// ---------- Helper fns (zero-arg) ----------
+//fn set_small_constants() {
+//    a = 1;
+//    b = 2;
+//    c = 3;
+//    d = 4;
+//    e = 5;
+//}
+//
+//fn set_flags_pttff() {
+//    p = true;  q = true;  r = true;  s = false; t = false;
+//}
+//
+//fn flip_flags() {
+//    p = !p; q = !q; r = !r; s = !s; t = !t;
+//}
+//
+//fn bump_xy() {
+//    x = x + 1;
+//    y = y + 2;
+//}
+//
+//fn write_v_from_w() {
+//    v = w + 10;
+//}
+//
+//fn id_x_into_z() {
+//    // tests copy-through with no local reassign in some paths
+//    z = x;
+//}
+//
+//fn print_avxwy() {
+//    print("a,b,x,w,y:", a, b, x, w, y);
+//}
+//
+//// ============ Test 1 ============
+//// Simple diamond, both arms assign -> φ at join
+//fn test_phi_both_arms() {
+//    a = 0;
+//    if true {
+//        a = 1;
+//    } else {
+//        a = 2;
+//    }
+//    print("T1 a:", a); // expect 1
+//}
+//
+//// ============ Test 2 ============
+//// Diamond where ELSE arm does not write -> φ(a_from_then, a_from_entry)
+//fn test_phi_one_arm() {
+//    a = 10;
+//    if p {           // p starts true in module_init
+//        a = 11;
+//        print("T2 side:", a);
+//    } else {
+//        // no write to a here
+//    }
+//    print("T2 a:", a); // expect 11
+//}
+//
+//// ============ Test 3 ============
+//// Nested diamonds that feed another φ
+//fn test_nested_phi_chain() {
+//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
+//    // x comes from (a or b)
+//    if p {
+//        x = a;
+//    } else {
+//        x = b;
+//    }
+//    // y comes from (b or x)
+//    if q {
+//        y = b;
+//    } else {
+//        y = x;
+//    }
+//    // z comes from (x or y)
+//    if r {
+//        z = x;
+//    } else {
+//        z = y;
+//    }
+//    print("T3 x,y,z:", x, y, z); // expect x=1, y=2, z=1 (with p=true,q=true,r=true)
+//}
+//
+//// ============ Test 4 ============
+//// Loop-carried value with back-edge φ (simple increment loop)
+//fn test_loop_simple_induction() {
+//    a = 0;
+//    while a < 5 {
+//        a = a + 1;
+//    }
+//    print("T4 a:", a); // expect 5
+//}
+//
+//// ============ Test 5 ============
+//// Loop with inner diamond on the back-edge (even/odd bump), classic from the thread
+//fn test_loop_nested_diamond_backedge() {
+//    a = 0;
+//    while a < 6 {
+//        if a % 2 == 0 {
+//            a = a + 2;
+//        } else {
+//            a = a + 1;
+//        }
+//    }
+//    print("T5 a:", a); // expect 6
+//}
+//
+//// ============ Test 6 ============
+//// Loop where only one arm writes; the other carries the previous value
+//fn test_loop_one_arm_writes() {
+//    x = 0;
+//    n = 4;
+//    while x < n {
+//        if p {
+//            // then arm writes
+//            x = x + 1;
+//        } else {
+//            // else arm does NOT write x (edge-live φ)
+//            // (keep this empty intentionally)
+//        }
+//        // flip p to force both edges to be taken across iterations
+//        p = !p;
+//    }
+//    print("T6 x:", x); // expect 4
+//}
+//
+//// ============ Test 7 ============
+//// Two different φs joining simultaneously, then used together
+//fn test_two_phis_together() {
+//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
+//
+//    // φ #1 -> x
+//    if p { x = a; } else { x = b; }
+//
+//    // φ #2 -> y
+//    if q { y = d; } else { y = e; }
+//
+//    w = x + y;
+//    print("T7 x,y,w:", x, y, w); // with p,q=true: x=1,y=4,w=5
+//}
+//
+//// ============ Test 8 ============
+//// Multiple writes in same pred before the join (ensure "last-def" is chosen)
+//fn test_last_def_in_pred() {
+//    a = 0;
+//    if p {
+//        a = 4;
+//        a = a + 2;     // last def in THEN
+//    } else {
+//        a = a + 1;     // last def in ELSE (uses prior a)
+//    }
+//    print("T8 a:", a); // with p=true: expect 6
+//}
+//
+//// ============ Test 9 ============
+//// Copy-through across join with no intervening write in one path
+//fn test_copy_through_join() {
+//    set_small_constants(); // a=1, b=2
+//    if p {
+//        x = a;
+//    } else {
+//        // no write to x here
+//    }
+//    print("T9 x:", x); // expect 1
+//}
+//
+//// ============ Test 10 ============
+//// Interprocedural: function writes globals that feed into φs later
+//fn test_interprocedural_globals() {
+//    set_small_constants(); // a..e
+//    bump_xy();             // x=1,y=2
+//    id_x_into_z();         // z=x
+//    if q {
+//        w = z;         // write in THEN
+//    } else {
+//        // no write in ELSE
+//    }
+//    write_v_from_w();      // v = w + 10 (tests read after φ-like merge)
+//    print("T10 x,y,z,w,v:", x, y, z, w, v); // with q=true: x=1,y=2,z=1,w=1,v=11
+//}
+//
+//// ============ Test 11 ============
+//// Diamond feeding diamond feeding loop-carried φ
+//fn test_diamond_chain_into_loop() {
+//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
+//    // First diamond → x
+//    if p { x = a; } else { x = b; }
+//    // Second diamond → y (mix x and c)
+//    if r { y = x; } else { y = c; }
+//
+//    // Loop carries z from (y or z+1)
+//    z = 0;
+//    n = 3;
+//    while z < n {
+//        if s {
+//            z = y;        // write z from merged y (tests φ with incoming from preheader)
+//        } else {
+//            z = z + 1;    // normal increment
+//        }
+//        s = !s; // alternate
+//    }
+//    print("T11 x,y,z:", x, y, z); // with p,r=true, s flips: y=1, z likely 1 then increments; final >=3
+//}
+//
+//// ============ Test 12 ============
+//// Two loop-carried variables updated in different arms
+//fn test_two_carriers() {
+//    x = 0; y = 0; n = 5;
+//    while x < n {
+//        if x % 2 == 0 {
+//            x = x + 1;   // writes x
+//            // y not written
+//        } else {
+//            y = y + 3;   // writes y
+//            x = x + 1;
+//        }
+//    }
+//    print("T12 x,y:", x, y); // expect x=5, y= (3*#odd-iters) = 3*2 = 6
+//}
+//
+//
+//// ============ Test 14 ============
+//// Temp values feeding φs, then used after φ removal
+//fn test_temps_and_phis() {
+//    set_small_constants(); // a=1,b=2,c=3
+//    if p {
+//        // create a temp-like chain: t = a+b; x = t + 1;
+//        x = (a + b) + 1;
+//    } else {
+//        // other arm: x = c + 2;
+//        x = c + 2;
+//    }
+//    // join
+//    print("T14 x:", x); // with a=1,b=2 -> x=4
+//}
+//
+//// ============ Test 15 ============
+//// Deep nesting mix (stress)
+//fn test_deep_mix() {
+//    set_flags_pttff(); // p=true,q=true,r=true,s=false,t=false
+//    set_small_constants(); // a..e = 1..5
+//    u = 0; v = 0; w = 0; x = 0; y = 0; z = 0;
+//
+//    if p {
+//        if q {
+//            x = a;
+//            if r {
+//                y = b;
+//            } else {
+//                y = c;
+//            }
+//        } else {
+//            x = d;
+//            y = e;
+//        }
+//    } else {
+//        if s {
+//            x = b + c;
+//        } else {
+//            // no write to x
+//        }
+//        if t {
+//            y = a + d;
+//        } else {
+//            // no write to y
+//        }
+//    }
+//
+//    // Another layer of diamonds that touch x,y
+//    if r {
+//        z = x + y;
+//    } else {
+//        z = x + 1;
+//    }
+//
+//    // A tiny loop that toggles s, adds to w from z or y
+//    m = 3;
+//    while m > 0 {
+//        if s {
+//            w = z + y;
+//        } else {
+//            w = w + 1;
+//        }
+//        s = !s;
+//        m = m - 1;
+//    }
+//
+//    print("T15 x,y,z,w:", x, y, z, w);
+//}
+//
+//// ============ Driver (module_init) ============
+//print("=== RUN TESTS START ===");
+//
+//test_phi_both_arms();
+//test_phi_one_arm();
+//test_nested_phi_chain();
+//test_loop_simple_induction();
+//test_loop_nested_diamond_backedge();
+//test_loop_one_arm_writes();
+//test_two_phis_together();
+//test_last_def_in_pred();
+//test_copy_through_join();
+//test_interprocedural_globals();
+//test_diamond_chain_into_loop();
+//test_two_carriers();
+//test_temps_and_phis();
+//test_deep_mix();
+//
+//print("=== RUN TESTS END ===");
 """
     tokenizer = Tokenizer(text)
     tokens = tokenizer.tokenize()

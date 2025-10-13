@@ -1,6 +1,7 @@
+let a = 0;
 fn test() {
     while true {
-        print("a");
+        print("a:", a);
         return;
     }
 }

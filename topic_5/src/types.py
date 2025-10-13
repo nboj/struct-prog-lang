@@ -39,6 +39,7 @@ class Op(IntEnum):
     DIV = auto()
     MUL = auto()
     NEG = auto()
+    BANG = auto()
     MOD = auto()
 
     EQ = auto()
@@ -98,6 +99,8 @@ def op_str(op: Op | PseudoOp):
                 return "NEG"
             case Op.MOD:
                 return "MOD"
+            case Op.BANG:
+                return "BANG"
 
             case Op.RET:
                 return "RET"
