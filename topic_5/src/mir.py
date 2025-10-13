@@ -27,6 +27,7 @@ from .binder import (
 )
 
 type VarKey = tuple[Literal["g", "l", "t"], int]
+type SSAVarKey = tuple[Literal["g", "l", "t"], int, int]
 
 class MStmt:
     pass
@@ -71,9 +72,13 @@ class Halt(TermStmt):
     succ: list["Block"]
 
 class Place:
+    death: tuple[int, int] | None = None # NOTE: [block_id, stmt_idx] where a var dies
+    init: tuple[int, int] | None = None # NOTE: [block_id, stmt_idx] where a var dies
     id: int
-    def __init__(self, id: int) -> None:
+    def __init__(self, id: int, death: tuple[int, int] | None = None, init: tuple[int, int] | None = None) -> None:
         self.id = id
+        self.death = death
+        self.init = init
 
     @override
     def __repr__(self) -> str:
@@ -83,8 +88,8 @@ class Place:
 class Local(Place):
     sym: Symbol
 
-    def __init__(self, id: int, sym: Symbol):
-        super().__init__(id)
+    def __init__(self, id: int, sym: Symbol, death: tuple[int, int] | None = None, init: tuple[int, int] | None = None):
+        super().__init__(id, death, init)
         self.sym = sym
 
     @override
@@ -94,8 +99,8 @@ class Local(Place):
 class Global(Place):
     sym: Symbol
 
-    def __init__(self, id: int, sym: Symbol):
-        super().__init__(id)
+    def __init__(self, id: int, sym: Symbol, death: tuple[int, int] | None = None, init: tuple[int, int] | None = None):
+        super().__init__(id, death, init)
         self.sym = sym
 
     @override
@@ -107,7 +112,7 @@ class RValue:
     pass
 
 
-class Const(RValue):
+class Const:
     value: int | float | str | bool | Nil
 
     def __init__(self, value: int | float | str | bool | Nil) -> None:
@@ -119,8 +124,8 @@ class Const(RValue):
 
 
 class Temp(Place):
-    def __init__(self, id: int):
-        super().__init__(id)
+    def __init__(self, id: int, death: tuple[int, int] | None = None, init: tuple[int, int] | None = None):
+        super().__init__(id, death, init)
 
     @override
     def __repr__(self) -> str:
@@ -208,6 +213,16 @@ class Assign(MStmt):
     @override
     def __repr__(self):
         return f"{self.lval} = {self.rval}"
+
+class Livein(MStmt):
+    lval: Global
+
+    def __init__(self, lval: Global):
+        self.lval = lval
+
+    @override
+    def __repr__(self):
+        return f"{self.lval}) = Livein"
 
 class Return(TermStmt):
     val: Operand | RValue
@@ -718,8 +733,10 @@ class SSANamer:
     var_info: dict[VarKey, Place]
     tree: DomTreeBuilder
     var_counter: int
+    liveins: dict[Global, Livein]
+    context: MIRContext
 
-    def __init__(self, df: dict[int, set[Block]], cfg: CFGBuilder, tree: DomTreeBuilder) -> None:
+    def __init__(self, df: dict[int, set[Block]], cfg: CFGBuilder, tree: DomTreeBuilder, context: MIRContext) -> None:
         self.df = df
         self.cfg = cfg
         self.vars = defaultdict(list)
@@ -728,6 +745,8 @@ class SSANamer:
         self.temp_counter = 0
         self.var_info = {}
         self.tree = tree
+        self.liveins = {}
+        self.context = context
 
     def rename_operand(self, operand: Operand):
         match operand:
@@ -765,8 +784,6 @@ class SSANamer:
                 raise AssertionError(f"unhandled rval type: {type(rval)}")
 
     def topvar(self, id: VarKey):
-        if len(self.vars[id]) <= 0 and id[0] == "g":
-            self.vars[id].append(0)
         assert len(self.vars[id]) > 0
         return self.vars[id][-1]
 
@@ -806,6 +823,10 @@ class SSANamer:
                 new_rval = self.rename_rval(rval)
                 new_lval = self.define_place(lval)
                 return Assign(new_lval, new_rval)
+            case Livein(lval=lval):
+                new_lval = self.define_place(lval)
+                assert isinstance(new_lval, Global)
+                return Livein(new_lval)
             case _:
                 raise AssertionError(f"unhandled stmt kind in ssa renaming: {type(stmt)}")
 
@@ -861,6 +882,9 @@ class SSANamer:
         blocks: list[Block] = []
         block_defines_var: dict[VarKey, set[int]] = defaultdict(set)
         for idx, block in enumerate(self.cfg.blocks):
+            if idx == 0: # NOTE: INSERT LIVEINS
+                for g in self.context.globals.values():
+                    block.stmts.insert(0, Livein(g))
             for stmt in block.stmts:
                 match stmt:
                     case Assign(lval=lval, rval=rval):
@@ -936,17 +960,8 @@ class SSANamer:
                 self.vars = deepcopy(vars_copy)
             blocks[map[block.id]] = block
         rename(entry)
-        #for block in blocks:
-        #    new_stmts: list[MStmt] = []
-        #    new_phis: dict[VarKey, PhiAssign] = {}
-        #    for phi in block.phis.values():
-        #        new_phis[self.var_key_from_place(phi.lval)] = self.rename_phi(phi)
-
-        #    for stmt in block.stmts:
-        #        new_stmts.append(self.rename_stmt(stmt))
-        #    block.phis = new_phis
-        #    block.stmts = new_stmts
-        #    block.term = self.rename_term(block.term)
+        for livein in reversed(self.liveins.values()):
+            blocks[0].stmts.insert(0, livein)
 
         for block in blocks:
             print()
@@ -1020,6 +1035,7 @@ class SSANamer:
 
 
         def global_rename_stmt(old_lval: Global | Local, new_lval: Global | Local, stmt: MStmt) -> MStmt:
+            assert isinstance(old_lval, type(new_lval))
             match stmt:
                 case Assign(lval=lval, rval=rval):
                     new_r = global_rename_use(old_lval, new_lval, rval)
@@ -1027,7 +1043,12 @@ class SSANamer:
                         return Assign(new_lval, new_r)
                     else:
                         return Assign(lval, new_r)
-
+                case Livein(lval=lval):
+                    if old_lval == lval:
+                        assert isinstance(new_lval, Global)
+                        return Livein(new_lval)
+                    else:
+                        return Livein(lval)
                 case _:
                     raise AssertionError(f"unhandled stmt kind in ssa renaming: {type(stmt)}")
 
@@ -1045,6 +1066,7 @@ class SSANamer:
                     raise AssertionError(f"unhandled term type when renaming: {type(term)}")
 
 
+        # NOTE: Phi Removal
         for block in blocks:
             if len(block.phis) > 0:
                 for (id, assign) in block.phis.items():
@@ -1100,6 +1122,228 @@ class SSANamer:
         return blocks
 
 
+class Analysis:
+    blocks: list[Block]
+    lifetimes: dict[SSAVarKey, tuple[tuple[int, int], tuple[int, int]]] # NOTE: Dies at blolckid, stmt idx
+    vars: list[Place] 
+    registers: dict[SSAVarKey, Place]
+
+    def __init__(self, ssa_blocks: list[Block]) -> None:
+        self.blocks = ssa_blocks
+        self.lifetimes = {}
+        self.vars = []
+        self.registers = {}
+
+    def check_rval_lifetime(self, rval: RValue | Operand, block_id: int, stmt_idx: int) -> RValue | Operand:
+        match rval:
+            case Copy():
+                return Copy(self.check_lval_lifetime(rval.origin, block_id, stmt_idx))
+            case Const():
+                return rval
+            case BinOp():
+                r = self.check_rval_lifetime(rval.lhs, block_id, stmt_idx)
+                l = self.check_rval_lifetime(rval.rhs, block_id, stmt_idx)
+                assert not isinstance(r, RValue)
+                assert not isinstance(l, RValue)
+                return BinOp(rval.op, lhs=l, rhs=r)
+            case Call():
+                args: list[Operand] = []
+                for arg in rval.args:
+                    a = self.check_rval_lifetime(arg, block_id, stmt_idx)
+                    assert not isinstance(a, RValue) or isinstance(a, Const), f"{type(a)}"
+                    args.append(a)
+                return Call(rval.callee, args)
+            case UnaryOp():
+                val = self.check_rval_lifetime(rval.val, block_id, stmt_idx)
+                assert isinstance(val, type(Operand))
+                return UnaryOp(rval.op, val)
+            case Move():
+                raise AssertionError(f"move not handled when evaluating lifetime: {type(rval)}")
+            case _:
+                raise AssertionError(f"unhandled rval type when evaluating lifetimes: {type(rval)}")
+
+    def var_key_from_place(self, place: Place) -> SSAVarKey:
+        match place:
+            case Temp(id=id):
+                return ("t", id, id)
+            case Global(id=id, sym=sym):
+                return ("g", sym.symbol_id, id)
+            case Local(id=id, sym=sym):
+                return ("l", sym.symbol_id, id)
+            case _:
+                raise AssertionError(f"unhandled place: {type(place)}")
+
+
+    def check_lval_lifetime(self, lval: Place, block_id: int, stmt_idx: int) -> Place:
+        if self.lifetimes.get(self.var_key_from_place(lval)) is None:
+            self.lifetimes[self.var_key_from_place(lval)] = ((block_id, stmt_idx), (0, 0))
+            match lval:
+                case Global():
+                    return Global(lval.id, lval.sym, death=(block_id, stmt_idx))
+                case Local():
+                    return Local(lval.id, lval.sym, death=(block_id, stmt_idx))
+                case Temp():
+                    return Temp(lval.id, death=(block_id, stmt_idx))
+                case _:
+                    raise AssertionError(f"unhandled lval type in lifetimes: {type(lval)}") 
+        else:
+            lifetime = self.lifetimes[self.var_key_from_place(lval)]
+            match lval:
+                case Global():
+                    return Global(lval.id, lval.sym, death=lifetime[0], init=lifetime[1])
+                case Local():
+                    return Local(lval.id, lval.sym, death=lifetime[0], init=lifetime[1])
+                case Temp():
+                    return Temp(lval.id, death=lifetime[0], init=lifetime[1])
+                case _:
+                    raise AssertionError(f"unhandled lval type in lifetimes: {type(lval)}") 
+
+    def check_stmt_lifetime(self, stmt: MStmt, block_id: int, stmt_idx: int) -> MStmt:
+        match stmt:
+            case Assign():
+                rval = self.check_rval_lifetime(stmt.rval, block_id, stmt_idx)
+                lval = self.check_lval_lifetime(stmt.lval, block_id, stmt_idx)
+                lval.init = (block_id, stmt_idx)
+                self.vars.append(lval)
+                return Assign(lval, rval)
+            case Livein():
+                lval = self.check_lval_lifetime(stmt.lval, block_id, stmt_idx)
+                lval.init = (block_id, stmt_idx)
+                self.vars.append(lval)
+                assert isinstance(lval, Global)
+                return Livein(lval)
+            case _:
+                raise AssertionError(f"unhandled stmt type when checking lifetimes: {type(stmt)}")
+
+
+    def check_term_lifetime(self, term: TermStmt, block_id: int, stmt_idx: int) -> TermStmt:
+        match term:
+            case Return(val=val):
+                return Return(self.check_rval_lifetime(val, block_id, stmt_idx))
+            case Goto():
+                return term
+            case Branch(condition=condition, true_block_id=true_block_id, false_block_id=false_block_id, succ=succ):
+                v = self.check_rval_lifetime(condition, block_id, stmt_idx)
+                assert not isinstance(v, RValue)
+                return Branch(v, true_block_id=true_block_id, false_block_id=false_block_id, succ=succ)
+            case Halt():
+                return term
+            case _:
+                raise AssertionError(f"unhandled term type when renaming: {type(term)}")
+
+
+
+
+
+
+
+
+    # NOTE: register funcs
+    def check_rval_registers(self, rval: RValue | Operand, block_id: int, stmt_idx: int):
+        match rval:
+            case Copy():
+                self.check_lval_registers(rval.origin, block_id, stmt_idx)
+            case Const():
+                pass
+            case BinOp():
+                self.check_rval_registers(rval.lhs, block_id, stmt_idx)
+                self.check_rval_registers(rval.rhs, block_id, stmt_idx)
+            case Call():
+                for arg in rval.args:
+                    self.check_rval_registers(arg, block_id, stmt_idx)
+            case UnaryOp():
+                self.check_rval_registers(rval.val, block_id, stmt_idx)
+            case Move():
+                raise AssertionError(f"move not handled when evaluating lifetime: {type(rval)}")
+            case _:
+                raise AssertionError(f"unhandled rval type when evaluating lifetimes: {type(rval)}")
+
+    def check_lval_registers(self, lval: Place, block_id: int, stmt_idx: int):
+        assert lval.init is not None
+        assert lval.death is not None
+        if lval.death[0] == block_id and lval.death[1] == stmt_idx:
+            _ = self.registers.pop(self.var_key_from_place(lval))
+        elif lval.init[0] == block_id and lval.init[1] == stmt_idx:
+            self.registers[self.var_key_from_place(lval)] = lval
+        return
+        match lval:
+            case Global():
+                pass
+            case Local():
+                pass
+            case Temp():
+                pass
+            case _:
+                raise AssertionError(f"unhandled lval type in lifetimes: {type(lval)}") 
+
+    def check_stmt_registers(self, stmt: MStmt, block_id: int, stmt_idx: int):
+        match stmt:
+            case Assign():
+                self.check_lval_registers(stmt.lval, block_id, stmt_idx)
+                self.check_rval_registers(stmt.rval, block_id, stmt_idx)
+            case Livein():
+                self.check_lval_registers(stmt.lval, block_id, stmt_idx)
+            case _:
+                raise AssertionError(f"unhandled stmt type when checking lifetimes: {type(stmt)}")
+
+    def check_term_registers(self, term: TermStmt, block_id: int, stmt_idx: int):
+        match term:
+            case Return(val=val):
+                self.check_rval_registers(val, block_id, stmt_idx)
+            case Goto():
+                pass
+            case Branch(condition=condition, true_block_id=true_block_id, false_block_id=false_block_id, succ=succ):
+                self.check_rval_registers(condition, block_id, stmt_idx)
+                pass
+            case Halt():
+                pass
+            case _:
+                raise AssertionError(f"unhandled term type when renaming: {type(term)}")
+
+    def run(self):
+        print()
+        print()
+        print()
+        print("==== ANALYSIS ====")
+
+        blocks: list[Block] = []
+        for block in reversed(self.blocks):
+            term = self.check_term_lifetime(block.term, block.id, -1)
+            new_block = Block(block.id)
+            new_stmts: list[MStmt] = []
+            for i, stmt in enumerate(reversed(block.stmts)):
+                idx = len(block.stmts)-1-i
+                new_stmt = self.check_stmt_lifetime(stmt, block.id, idx)
+                new_stmts.append(new_stmt)
+            new_stmts.reverse()
+            new_block.stmts = new_stmts
+            new_block.term = term
+            blocks.append(new_block)
+
+        removals = 0
+        for lval in self.vars:
+            assert lval.death is not None
+            assert lval.init is not None
+
+            if lval.init == lval.death and not isinstance(lval, Global):
+                removals += 1
+            print()
+            print(f"{lval} inits at block: {lval.init[0]}, after stmt index: {lval.init[1]}")
+            print(f"{lval} dies at block: {lval.death[0]}, after stmt index: {lval.death[1]}")
+            print()
+
+        print(f"REMOVALS: {removals}")
+
+        for block in blocks:
+            for idx, stmt in enumerate(block.stmts):
+                self.check_stmt_registers(stmt, block.id, idx)
+
+        print("==== END ANALYSIS ====")
+        print()
+        print()
+        print()
+        
+
 class Mir:
     program: BoundProgram
     temp_counter: int
@@ -1107,7 +1351,8 @@ class Mir:
     cfgs: list[CFGBuilder]
     dom_trees: list[DomTreeBuilder]
     context: MIRContext
-    DFs: list[dict[int, set[Block]]] = []
+    DFs: list[dict[int, set[Block]]]
+    ssa_blocks: list[list[Block]]
 
     def __init__(self, bound_program: BoundProgram, debug: bool = False) -> None:
         self.program = bound_program
@@ -1116,6 +1361,8 @@ class Mir:
         self.cfgs = []
         self.dom_trees = []
         self.context =  MIRContext()
+        self.DFs = []
+        self.ssa_blocks = []
 
     def build_cfg(self):
         for fn in self.program.body:
@@ -1160,14 +1407,20 @@ class Mir:
 
     def rename(self):
         for (cfg, df, tree) in zip(self.cfgs, self.DFs, self.dom_trees):
-            namer = SSANamer(df=df, cfg=cfg, tree=tree)
-            blocks = namer.run()
+            namer = SSANamer(df=df, cfg=cfg, tree=tree, context=self.context)
+            self.ssa_blocks.append(namer.run())
+
+    def analyze(self):
+        for blocks in self.ssa_blocks:
+            analyzer = Analysis(blocks)
+            analyzer.run()
 
     def lower(self):
         self.build_cfg()
         self.build_trees()
         self.compute_dominator_frontiers()
         self.rename()
+        self.analyze()
 
 
 if __name__ == "__main__":
@@ -1177,348 +1430,14 @@ if __name__ == "__main__":
 
     text = """
 let a = 0;
-let a = 2;
-print("test", a);
-//// ==============================
-//// Big SSA / φ / Liveness Testbed
-//// ==============================
-//
-//// ---- Globals used across tests ----
-//let p = true;
-//let q = true;
-//let r = true;
-//let s = true;
-//let t = true;
-//
-//let a = 0;
-//let b = 0;
-//let c = 0;
-//let d = 0;
-//let e = 0;
-//
-//let x = 0;
-//let y = 0;
-//let z = 0;
-//let w = 0;
-//let v = 0;
-//let u = 0;
-//
-//let n = 0;
-//let m = 0;
-//
-//let flag = false;
-//
-//// ---------- Helper fns (zero-arg) ----------
-//fn set_small_constants() {
-//    a = 1;
-//    b = 2;
-//    c = 3;
-//    d = 4;
-//    e = 5;
-//}
-//
-//fn set_flags_pttff() {
-//    p = true;  q = true;  r = true;  s = false; t = false;
-//}
-//
-//fn flip_flags() {
-//    p = !p; q = !q; r = !r; s = !s; t = !t;
-//}
-//
-//fn bump_xy() {
-//    x = x + 1;
-//    y = y + 2;
-//}
-//
-//fn write_v_from_w() {
-//    v = w + 10;
-//}
-//
-//fn id_x_into_z() {
-//    // tests copy-through with no local reassign in some paths
-//    z = x;
-//}
-//
-//fn print_avxwy() {
-//    print("a,b,x,w,y:", a, b, x, w, y);
-//}
-//
-//// ============ Test 1 ============
-//// Simple diamond, both arms assign -> φ at join
-//fn test_phi_both_arms() {
-//    a = 0;
-//    if true {
-//        a = 1;
-//    } else {
-//        a = 2;
-//    }
-//    print("T1 a:", a); // expect 1
-//}
-//
-//// ============ Test 2 ============
-//// Diamond where ELSE arm does not write -> φ(a_from_then, a_from_entry)
-//fn test_phi_one_arm() {
-//    a = 10;
-//    if p {           // p starts true in module_init
-//        a = 11;
-//        print("T2 side:", a);
-//    } else {
-//        // no write to a here
-//    }
-//    print("T2 a:", a); // expect 11
-//}
-//
-//// ============ Test 3 ============
-//// Nested diamonds that feed another φ
-//fn test_nested_phi_chain() {
-//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
-//    // x comes from (a or b)
-//    if p {
-//        x = a;
-//    } else {
-//        x = b;
-//    }
-//    // y comes from (b or x)
-//    if q {
-//        y = b;
-//    } else {
-//        y = x;
-//    }
-//    // z comes from (x or y)
-//    if r {
-//        z = x;
-//    } else {
-//        z = y;
-//    }
-//    print("T3 x,y,z:", x, y, z); // expect x=1, y=2, z=1 (with p=true,q=true,r=true)
-//}
-//
-//// ============ Test 4 ============
-//// Loop-carried value with back-edge φ (simple increment loop)
-//fn test_loop_simple_induction() {
-//    a = 0;
-//    while a < 5 {
-//        a = a + 1;
-//    }
-//    print("T4 a:", a); // expect 5
-//}
-//
-//// ============ Test 5 ============
-//// Loop with inner diamond on the back-edge (even/odd bump), classic from the thread
-//fn test_loop_nested_diamond_backedge() {
-//    a = 0;
-//    while a < 6 {
-//        if a % 2 == 0 {
-//            a = a + 2;
-//        } else {
-//            a = a + 1;
-//        }
-//    }
-//    print("T5 a:", a); // expect 6
-//}
-//
-//// ============ Test 6 ============
-//// Loop where only one arm writes; the other carries the previous value
-//fn test_loop_one_arm_writes() {
-//    x = 0;
-//    n = 4;
-//    while x < n {
-//        if p {
-//            // then arm writes
-//            x = x + 1;
-//        } else {
-//            // else arm does NOT write x (edge-live φ)
-//            // (keep this empty intentionally)
-//        }
-//        // flip p to force both edges to be taken across iterations
-//        p = !p;
-//    }
-//    print("T6 x:", x); // expect 4
-//}
-//
-//// ============ Test 7 ============
-//// Two different φs joining simultaneously, then used together
-//fn test_two_phis_together() {
-//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
-//
-//    // φ #1 -> x
-//    if p { x = a; } else { x = b; }
-//
-//    // φ #2 -> y
-//    if q { y = d; } else { y = e; }
-//
-//    w = x + y;
-//    print("T7 x,y,w:", x, y, w); // with p,q=true: x=1,y=4,w=5
-//}
-//
-//// ============ Test 8 ============
-//// Multiple writes in same pred before the join (ensure "last-def" is chosen)
-//fn test_last_def_in_pred() {
-//    a = 0;
-//    if p {
-//        a = 4;
-//        a = a + 2;     // last def in THEN
-//    } else {
-//        a = a + 1;     // last def in ELSE (uses prior a)
-//    }
-//    print("T8 a:", a); // with p=true: expect 6
-//}
-//
-//// ============ Test 9 ============
-//// Copy-through across join with no intervening write in one path
-//fn test_copy_through_join() {
-//    set_small_constants(); // a=1, b=2
-//    if p {
-//        x = a;
-//    } else {
-//        // no write to x here
-//    }
-//    print("T9 x:", x); // expect 1
-//}
-//
-//// ============ Test 10 ============
-//// Interprocedural: function writes globals that feed into φs later
-//fn test_interprocedural_globals() {
-//    set_small_constants(); // a..e
-//    bump_xy();             // x=1,y=2
-//    id_x_into_z();         // z=x
-//    if q {
-//        w = z;         // write in THEN
-//    } else {
-//        // no write in ELSE
-//    }
-//    write_v_from_w();      // v = w + 10 (tests read after φ-like merge)
-//    print("T10 x,y,z,w,v:", x, y, z, w, v); // with q=true: x=1,y=2,z=1,w=1,v=11
-//}
-//
-//// ============ Test 11 ============
-//// Diamond feeding diamond feeding loop-carried φ
-//fn test_diamond_chain_into_loop() {
-//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
-//    // First diamond → x
-//    if p { x = a; } else { x = b; }
-//    // Second diamond → y (mix x and c)
-//    if r { y = x; } else { y = c; }
-//
-//    // Loop carries z from (y or z+1)
-//    z = 0;
-//    n = 3;
-//    while z < n {
-//        if s {
-//            z = y;        // write z from merged y (tests φ with incoming from preheader)
-//        } else {
-//            z = z + 1;    // normal increment
-//        }
-//        s = !s; // alternate
-//    }
-//    print("T11 x,y,z:", x, y, z); // with p,r=true, s flips: y=1, z likely 1 then increments; final >=3
-//}
-//
-//// ============ Test 12 ============
-//// Two loop-carried variables updated in different arms
-//fn test_two_carriers() {
-//    x = 0; y = 0; n = 5;
-//    while x < n {
-//        if x % 2 == 0 {
-//            x = x + 1;   // writes x
-//            // y not written
-//        } else {
-//            y = y + 3;   // writes y
-//            x = x + 1;
-//        }
-//    }
-//    print("T12 x,y:", x, y); // expect x=5, y= (3*#odd-iters) = 3*2 = 6
-//}
-//
-//
-//// ============ Test 14 ============
-//// Temp values feeding φs, then used after φ removal
-//fn test_temps_and_phis() {
-//    set_small_constants(); // a=1,b=2,c=3
-//    if p {
-//        // create a temp-like chain: t = a+b; x = t + 1;
-//        x = (a + b) + 1;
-//    } else {
-//        // other arm: x = c + 2;
-//        x = c + 2;
-//    }
-//    // join
-//    print("T14 x:", x); // with a=1,b=2 -> x=4
-//}
-//
-//// ============ Test 15 ============
-//// Deep nesting mix (stress)
-//fn test_deep_mix() {
-//    set_flags_pttff(); // p=true,q=true,r=true,s=false,t=false
-//    set_small_constants(); // a..e = 1..5
-//    u = 0; v = 0; w = 0; x = 0; y = 0; z = 0;
-//
-//    if p {
-//        if q {
-//            x = a;
-//            if r {
-//                y = b;
-//            } else {
-//                y = c;
-//            }
-//        } else {
-//            x = d;
-//            y = e;
-//        }
-//    } else {
-//        if s {
-//            x = b + c;
-//        } else {
-//            // no write to x
-//        }
-//        if t {
-//            y = a + d;
-//        } else {
-//            // no write to y
-//        }
-//    }
-//
-//    // Another layer of diamonds that touch x,y
-//    if r {
-//        z = x + y;
-//    } else {
-//        z = x + 1;
-//    }
-//
-//    // A tiny loop that toggles s, adds to w from z or y
-//    m = 3;
-//    while m > 0 {
-//        if s {
-//            w = z + y;
-//        } else {
-//            w = w + 1;
-//        }
-//        s = !s;
-//        m = m - 1;
-//    }
-//
-//    print("T15 x,y,z,w:", x, y, z, w);
-//}
-//
-//// ============ Driver (module_init) ============
-//print("=== RUN TESTS START ===");
-//
-//test_phi_both_arms();
-//test_phi_one_arm();
-//test_nested_phi_chain();
-//test_loop_simple_induction();
-//test_loop_nested_diamond_backedge();
-//test_loop_one_arm_writes();
-//test_two_phis_together();
-//test_last_def_in_pred();
-//test_copy_through_join();
-//test_interprocedural_globals();
-//test_diamond_chain_into_loop();
-//test_two_carriers();
-//test_temps_and_phis();
-//test_deep_mix();
-//
-//print("=== RUN TESTS END ===");
+fn foo(arg1) {
+    print("this is a:", a);
+    a = 4;
+}
+if a == a {
+    a = 1;
+}
+print("a:", a);
 """
     tokenizer = Tokenizer(text)
     tokens = tokenizer.tokenize()
@@ -1568,3 +1487,344 @@ print("test", a);
             print(tmp)
         print("=================")
         print()
+
+#//// ==============================
+#//// Big SSA / φ / Liveness Testbed
+#//// ==============================
+#//
+#//// ---- Globals used across tests ----
+#//let p = true;
+#//let q = true;
+#//let r = true;
+#//let s = true;
+#//let t = true;
+#//
+#//let a = 0;
+#//let b = 0;
+#//let c = 0;
+#//let d = 0;
+#//let e = 0;
+#//
+#//let x = 0;
+#//let y = 0;
+#//let z = 0;
+#//let w = 0;
+#//let v = 0;
+#//let u = 0;
+#//
+#//let n = 0;
+#//let m = 0;
+#//
+#//let flag = false;
+#//
+#//// ---------- Helper fns (zero-arg) ----------
+#//fn set_small_constants() {
+#//    a = 1;
+#//    b = 2;
+#//    c = 3;
+#//    d = 4;
+#//    e = 5;
+#//}
+#//
+#//fn set_flags_pttff() {
+#//    p = true;  q = true;  r = true;  s = false; t = false;
+#//}
+#//
+#//fn flip_flags() {
+#//    p = !p; q = !q; r = !r; s = !s; t = !t;
+#//}
+#//
+#//fn bump_xy() {
+#//    x = x + 1;
+#//    y = y + 2;
+#//}
+#//
+#//fn write_v_from_w() {
+#//    v = w + 10;
+#//}
+#//
+#//fn id_x_into_z() {
+#//    // tests copy-through with no local reassign in some paths
+#//    z = x;
+#//}
+#//
+#//fn print_avxwy() {
+#//    print("a,b,x,w,y:", a, b, x, w, y);
+#//}
+#//
+#//// ============ Test 1 ============
+#//// Simple diamond, both arms assign -> φ at join
+#//fn test_phi_both_arms() {
+#//    a = 0;
+#//    if true {
+#//        a = 1;
+#//    } else {
+#//        a = 2;
+#//    }
+#//    print("T1 a:", a); // expect 1
+#//}
+#//
+#//// ============ Test 2 ============
+#//// Diamond where ELSE arm does not write -> φ(a_from_then, a_from_entry)
+#//fn test_phi_one_arm() {
+#//    a = 10;
+#//    if p {           // p starts true in module_init
+#//        a = 11;
+#//        print("T2 side:", a);
+#//    } else {
+#//        // no write to a here
+#//    }
+#//    print("T2 a:", a); // expect 11
+#//}
+#//
+#//// ============ Test 3 ============
+#//// Nested diamonds that feed another φ
+#//fn test_nested_phi_chain() {
+#//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
+#//    // x comes from (a or b)
+#//    if p {
+#//        x = a;
+#//    } else {
+#//        x = b;
+#//    }
+#//    // y comes from (b or x)
+#//    if q {
+#//        y = b;
+#//    } else {
+#//        y = x;
+#//    }
+#//    // z comes from (x or y)
+#//    if r {
+#//        z = x;
+#//    } else {
+#//        z = y;
+#//    }
+#//    print("T3 x,y,z:", x, y, z); // expect x=1, y=2, z=1 (with p=true,q=true,r=true)
+#//}
+#//
+#//// ============ Test 4 ============
+#//// Loop-carried value with back-edge φ (simple increment loop)
+#//fn test_loop_simple_induction() {
+#//    a = 0;
+#//    while a < 5 {
+#//        a = a + 1;
+#//    }
+#//    print("T4 a:", a); // expect 5
+#//}
+#//
+#//// ============ Test 5 ============
+#//// Loop with inner diamond on the back-edge (even/odd bump), classic from the thread
+#//fn test_loop_nested_diamond_backedge() {
+#//    a = 0;
+#//    while a < 6 {
+#//        if a % 2 == 0 {
+#//            a = a + 2;
+#//        } else {
+#//            a = a + 1;
+#//        }
+#//    }
+#//    print("T5 a:", a); // expect 6
+#//}
+#//
+#//// ============ Test 6 ============
+#//// Loop where only one arm writes; the other carries the previous value
+#//fn test_loop_one_arm_writes() {
+#//    x = 0;
+#//    n = 4;
+#//    while x < n {
+#//        if p {
+#//            // then arm writes
+#//            x = x + 1;
+#//        } else {
+#//            // else arm does NOT write x (edge-live φ)
+#//            // (keep this empty intentionally)
+#//        }
+#//        // flip p to force both edges to be taken across iterations
+#//        p = !p;
+#//    }
+#//    print("T6 x:", x); // expect 4
+#//}
+#//
+#//// ============ Test 7 ============
+#//// Two different φs joining simultaneously, then used together
+#//fn test_two_phis_together() {
+#//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
+#//
+#//    // φ #1 -> x
+#//    if p { x = a; } else { x = b; }
+#//
+#//    // φ #2 -> y
+#//    if q { y = d; } else { y = e; }
+#//
+#//    w = x + y;
+#//    print("T7 x,y,w:", x, y, w); // with p,q=true: x=1,y=4,w=5
+#//}
+#//
+#//// ============ Test 8 ============
+#//// Multiple writes in same pred before the join (ensure "last-def" is chosen)
+#//fn test_last_def_in_pred() {
+#//    a = 0;
+#//    if p {
+#//        a = 4;
+#//        a = a + 2;     // last def in THEN
+#//    } else {
+#//        a = a + 1;     // last def in ELSE (uses prior a)
+#//    }
+#//    print("T8 a:", a); // with p=true: expect 6
+#//}
+#//
+#//// ============ Test 9 ============
+#//// Copy-through across join with no intervening write in one path
+#//fn test_copy_through_join() {
+#//    set_small_constants(); // a=1, b=2
+#//    if p {
+#//        x = a;
+#//    } else {
+#//        // no write to x here
+#//    }
+#//    print("T9 x:", x); // expect 1
+#//}
+#//
+#//// ============ Test 10 ============
+#//// Interprocedural: function writes globals that feed into φs later
+#//fn test_interprocedural_globals() {
+#//    set_small_constants(); // a..e
+#//    bump_xy();             // x=1,y=2
+#//    id_x_into_z();         // z=x
+#//    if q {
+#//        w = z;         // write in THEN
+#//    } else {
+#//        // no write in ELSE
+#//    }
+#//    write_v_from_w();      // v = w + 10 (tests read after φ-like merge)
+#//    print("T10 x,y,z,w,v:", x, y, z, w, v); // with q=true: x=1,y=2,z=1,w=1,v=11
+#//}
+#//
+#//// ============ Test 11 ============
+#//// Diamond feeding diamond feeding loop-carried φ
+#//fn test_diamond_chain_into_loop() {
+#//    set_small_constants(); // a=1,b=2,c=3,d=4,e=5
+#//    // First diamond → x
+#//    if p { x = a; } else { x = b; }
+#//    // Second diamond → y (mix x and c)
+#//    if r { y = x; } else { y = c; }
+#//
+#//    // Loop carries z from (y or z+1)
+#//    z = 0;
+#//    n = 3;
+#//    while z < n {
+#//        if s {
+#//            z = y;        // write z from merged y (tests φ with incoming from preheader)
+#//        } else {
+#//            z = z + 1;    // normal increment
+#//        }
+#//        s = !s; // alternate
+#//    }
+#//    print("T11 x,y,z:", x, y, z); // with p,r=true, s flips: y=1, z likely 1 then increments; final >=3
+#//}
+#//
+#//// ============ Test 12 ============
+#//// Two loop-carried variables updated in different arms
+#//fn test_two_carriers() {
+#//    x = 0; y = 0; n = 5;
+#//    while x < n {
+#//        if x % 2 == 0 {
+#//            x = x + 1;   // writes x
+#//            // y not written
+#//        } else {
+#//            y = y + 3;   // writes y
+#//            x = x + 1;
+#//        }
+#//    }
+#//    print("T12 x,y:", x, y); // expect x=5, y= (3*#odd-iters) = 3*2 = 6
+#//}
+#//
+#//
+#//// ============ Test 14 ============
+#//// Temp values feeding φs, then used after φ removal
+#//fn test_temps_and_phis() {
+#//    set_small_constants(); // a=1,b=2,c=3
+#//    if p {
+#//        // create a temp-like chain: t = a+b; x = t + 1;
+#//        x = (a + b) + 1;
+#//    } else {
+#//        // other arm: x = c + 2;
+#//        x = c + 2;
+#//    }
+#//    // join
+#//    print("T14 x:", x); // with a=1,b=2 -> x=4
+#//}
+#//
+#//// ============ Test 15 ============
+#//// Deep nesting mix (stress)
+#//fn test_deep_mix() {
+#//    set_flags_pttff(); // p=true,q=true,r=true,s=false,t=false
+#//    set_small_constants(); // a..e = 1..5
+#//    u = 0; v = 0; w = 0; x = 0; y = 0; z = 0;
+#//
+#//    if p {
+#//        if q {
+#//            x = a;
+#//            if r {
+#//                y = b;
+#//            } else {
+#//                y = c;
+#//            }
+#//        } else {
+#//            x = d;
+#//            y = e;
+#//        }
+#//    } else {
+#//        if s {
+#//            x = b + c;
+#//        } else {
+#//            // no write to x
+#//        }
+#//        if t {
+#//            y = a + d;
+#//        } else {
+#//            // no write to y
+#//        }
+#//    }
+#//
+#//    // Another layer of diamonds that touch x,y
+#//    if r {
+#//        z = x + y;
+#//    } else {
+#//        z = x + 1;
+#//    }
+#//
+#//    // A tiny loop that toggles s, adds to w from z or y
+#//    m = 3;
+#//    while m > 0 {
+#//        if s {
+#//            w = z + y;
+#//        } else {
+#//            w = w + 1;
+#//        }
+#//        s = !s;
+#//        m = m - 1;
+#//    }
+#//
+#//    print("T15 x,y,z,w:", x, y, z, w);
+#//}
+#//
+#//// ============ Driver (module_init) ============
+#//print("=== RUN TESTS START ===");
+#//
+#//test_phi_both_arms();
+#//test_phi_one_arm();
+#//test_nested_phi_chain();
+#//test_loop_simple_induction();
+#//test_loop_nested_diamond_backedge();
+#//test_loop_one_arm_writes();
+#//test_two_phis_together();
+#//test_last_def_in_pred();
+#//test_copy_through_join();
+#//test_interprocedural_globals();
+#//test_diamond_chain_into_loop();
+#//test_two_carriers();
+#//test_temps_and_phis();
+#//test_deep_mix();
+#//
+#//print("=== RUN TESTS END ===");

@@ -5,4 +5,4 @@ fn test() {
         return;
     }
 }
-test();
+test("t");
