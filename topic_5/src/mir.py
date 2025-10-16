@@ -308,17 +308,6 @@ class CFGBuilder:
         else:
             raise AssertionError(f"Unhandled local symbol type {sym.sym_type}")
 
-    def get_local(self, sym: Symbol):
-        if sym.sym_type == SymbolType.Global:
-            return self.mir_context.ensure_global(sym)
-        elif sym.sym_type == SymbolType.Local:
-            local = self.locals[sym.symbol_id]
-            assert local is not None, "Local was none in get local"
-            return local
-        else:
-            raise AssertionError(f"Unhandled local symbol type {sym.sym_type}")
-
-
     def lower_to_local(self, place: BoundExpr):
         if isinstance(place, BoundVariable):
             return self.ensure_local(place.sym)
@@ -335,7 +324,7 @@ class CFGBuilder:
 
     def lower_to_place(self, expr: BoundExpr) -> Place:
         if isinstance(expr, BoundVariable):
-            return self.get_local(expr.sym)
+            return self.ensure_local(expr.sym)
         else:
             raise AssertionError(
                 f"Unhandled expr type in lower_to_place mir: {type(expr)}"
@@ -405,7 +394,7 @@ class CFGBuilder:
                     self.emit(Assign(tmp, BinOp(op, lhs, rhs)))
                     return Copy(tmp)
         elif isinstance(expr, BoundVariable):
-            return Copy(self.get_local(expr.sym))
+            return Copy(self.ensure_local(expr.sym))
         elif isinstance(expr, BoundLiteral):
             return Const(expr.value)
         else:
@@ -1239,33 +1228,40 @@ class Analysis:
 
 
     # NOTE: register funcs
-    def check_rval_registers(self, rval: RValue | Operand, block_id: int, stmt_idx: int):
+    def check_rval_registers(self, rval: RValue | Operand, block_id: int, stmt_idx: int) -> list[Place]:
+        dead: list[Place] = []
         match rval:
             case Copy():
-                self.check_lval_registers(rval.origin, block_id, stmt_idx)
+                a = self.check_lval_registers(rval.origin, block_id, stmt_idx)
+                if a:
+                    dead.append(a)
             case Const():
                 pass
             case BinOp():
-                self.check_rval_registers(rval.lhs, block_id, stmt_idx)
-                self.check_rval_registers(rval.rhs, block_id, stmt_idx)
+                dead += self.check_rval_registers(rval.lhs, block_id, stmt_idx)
+                dead += self.check_rval_registers(rval.rhs, block_id, stmt_idx)
             case Call():
                 for arg in rval.args:
-                    self.check_rval_registers(arg, block_id, stmt_idx)
+                    dead += self.check_rval_registers(arg, block_id, stmt_idx)
             case UnaryOp():
-                self.check_rval_registers(rval.val, block_id, stmt_idx)
+                dead += self.check_rval_registers(rval.val, block_id, stmt_idx)
             case Move():
                 raise AssertionError(f"move not handled when evaluating lifetime: {type(rval)}")
             case _:
                 raise AssertionError(f"unhandled rval type when evaluating lifetimes: {type(rval)}")
+        return dead
 
     def check_lval_registers(self, lval: Place, block_id: int, stmt_idx: int):
+        lifetime = self.lifetimes[self.var_key_from_place(lval)]
+        lval.init = lifetime[0]
+        lval.death = lifetime[0]
         assert lval.init is not None
         assert lval.death is not None
+        self.registers[self.var_key_from_place(lval)] = lval
         if lval.death[0] == block_id and lval.death[1] == stmt_idx:
-            _ = self.registers.pop(self.var_key_from_place(lval))
-        elif lval.init[0] == block_id and lval.init[1] == stmt_idx:
-            self.registers[self.var_key_from_place(lval)] = lval
-        return
+            return lval
+        #elif lval.init[0] == block_id and lval.init[1] == stmt_idx:
+        return None
         match lval:
             case Global():
                 pass
@@ -1277,28 +1273,36 @@ class Analysis:
                 raise AssertionError(f"unhandled lval type in lifetimes: {type(lval)}") 
 
     def check_stmt_registers(self, stmt: MStmt, block_id: int, stmt_idx: int):
+        dead: list[Place] = []
         match stmt:
             case Assign():
-                self.check_lval_registers(stmt.lval, block_id, stmt_idx)
-                self.check_rval_registers(stmt.rval, block_id, stmt_idx)
+                a = self.check_lval_registers(stmt.lval, block_id, stmt_idx)
+                dead += self.check_rval_registers(stmt.rval, block_id, stmt_idx)
+                if a:
+                    dead.append(a)
             case Livein():
-                self.check_lval_registers(stmt.lval, block_id, stmt_idx)
+                a = self.check_lval_registers(stmt.lval, block_id, stmt_idx)
+                if a:
+                    dead.append(a)
             case _:
                 raise AssertionError(f"unhandled stmt type when checking lifetimes: {type(stmt)}")
+        return dead
 
     def check_term_registers(self, term: TermStmt, block_id: int, stmt_idx: int):
+        dead: list[Place] = []
         match term:
             case Return(val=val):
-                self.check_rval_registers(val, block_id, stmt_idx)
+                dead += self.check_rval_registers(val, block_id, stmt_idx)
             case Goto():
                 pass
             case Branch(condition=condition, true_block_id=true_block_id, false_block_id=false_block_id, succ=succ):
-                self.check_rval_registers(condition, block_id, stmt_idx)
+                dead += self.check_rval_registers(condition, block_id, stmt_idx)
                 pass
             case Halt():
                 pass
             case _:
                 raise AssertionError(f"unhandled term type when renaming: {type(term)}")
+        return dead
 
     def run(self):
         print()
@@ -1334,9 +1338,16 @@ class Analysis:
 
         print(f"REMOVALS: {removals}")
 
+        nregs = 0
         for block in blocks:
             for idx, stmt in enumerate(block.stmts):
-                self.check_stmt_registers(stmt, block.id, idx)
+                dead = self.check_stmt_registers(stmt, block.id, idx)
+                if len(self.registers) > nregs:
+                    nregs = len(self.registers)
+                for d in dead:
+                    _ = self.registers.pop(self.var_key_from_place(d))
+
+        print(f"Function needs {nregs} registers")
 
         print("==== END ANALYSIS ====")
         print()
@@ -1351,7 +1362,7 @@ class Mir:
     cfgs: list[CFGBuilder]
     dom_trees: list[DomTreeBuilder]
     context: MIRContext
-    DFs: list[dict[int, set[Block]]]
+    dfs: list[dict[int, set[Block]]]
     ssa_blocks: list[list[Block]]
 
     def __init__(self, bound_program: BoundProgram, debug: bool = False) -> None:
@@ -1361,7 +1372,7 @@ class Mir:
         self.cfgs = []
         self.dom_trees = []
         self.context =  MIRContext()
-        self.DFs = []
+        self.dfs = []
         self.ssa_blocks = []
 
     def build_cfg(self):
@@ -1403,10 +1414,10 @@ class Mir:
                     if len(next_preds) == 0:
                         break
                     current_preds = next_preds
-            self.DFs.append(df_map)
+            self.dfs.append(df_map)
 
     def rename(self):
-        for (cfg, df, tree) in zip(self.cfgs, self.DFs, self.dom_trees):
+        for (cfg, df, tree) in zip(self.cfgs, self.dfs, self.dom_trees):
             namer = SSANamer(df=df, cfg=cfg, tree=tree, context=self.context)
             self.ssa_blocks.append(namer.run())
 
@@ -1431,6 +1442,7 @@ if __name__ == "__main__":
     text = """
 let a = 0;
 fn foo(arg1) {
+    print(arg1);
     print("this is a:", a);
     a = 4;
 }
@@ -1475,7 +1487,7 @@ print("a:", a);
         tree.print_tree(tree.entry)
 
         print("=================")
-        df_map = mir.DFs[idx]
+        df_map = mir.dfs[idx]
         print("JOIN:", len(df_map))
         for (id, items) in df_map.items():
             tmp = f"DF={id}, ["
