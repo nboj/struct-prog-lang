@@ -1439,18 +1439,26 @@ if __name__ == "__main__":
     from .parser import Parser
     from .binder import Binder
 
+
     text = """
-let a = 0;
-fn foo(arg1) {
-    print(arg1);
-    print("this is a:", a);
-    a = 4;
-}
-if a == a {
-    a = 1;
-}
-print("a:", a);
+let x = 5;
+    x = 0;
+    while x < 5 {
+    }
 """
+
+#    text = """
+#let a = 0;
+#fn foo(arg1) {
+#    print(arg1);
+#    print("this is a:", a);
+#    a = 4;
+#}
+#if a == a {
+#    a = 1;
+#}
+#print("a:", a);
+#"""
     tokenizer = Tokenizer(text)
     tokens = tokenizer.tokenize()
     parser = Parser(tokens, tokenizer.sm)
