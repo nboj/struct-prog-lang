@@ -1,0 +1,47 @@
+let a=2;
+let b=3;
+let c=5;
+let d=7;
+let e=11;
+let f=13;
+let g=17;
+let h=19;
+let i=23;
+let j=25;
+let k=27;
+let l=28;
+
+let m=29;
+let n=31;
+let o=35;
+let p=37;
+let q=41;
+let r=43;
+let s=47;
+let t=53;
+let u=59;
+let v=61;
+let w=67;
+let x=71;
+let y=73;
+let z=79;
+
+let aa = 101;
+let bb = 203;
+let cc = 503;
+let dd = 239;
+let ee = 133;
+let ff = 159;
+let gg = 259;
+let hh = 359;
+let ii = 459;
+let jj = 1001;
+let kk = 1187;
+
+print(a+b*c - d/e + f*g - h/i + j*k - l/m + n*o - p/q + r*s - t/u + v*w - x/y + z*aa - bb/cc + dd*ee - ff/gg + hh*ii - jj/kk);
+print((a + b > c) && (d + e > f) && (g + h > i) && (j + k > l));
+print((a*b == c*d) || (e/f < g/h) || (i + j > k - l) || (m*n == o/p));
+print((a < b) && (b < c) && (c < d) && (d < e) && (e < f) && (f < g));
+print((a == b) || (b == c) || (c == d) || (d == e) || (e == f));
+print((a+(b*(c+(d*(e+(f*(g+(h*(i+j))))))))) > (k + (l*(m + (n*o)))));
+print(( (a+b) * (c+d) - (e+f) / (g+h) ) == ( i*j - k/l ));
